@@ -646,7 +646,9 @@ html_table <- function(df) {
 
 # Self-contained HTML report for one run: summary, settings, statistics and figures
 # Comparison for the paper: Styer et al. (2007) published values, the deterministic model at their parameter
-# values, and a probabilistic run in which every assumption in use is Uniform within +/- `spread` of that value.
+# values, a probabilistic run in which every assumption in use is Uniform within +/- `spread` of that value,
+# and a probabilistic run with the literature-based distributions (the app's default preset, where the
+# growth rate and first-bite age have no published range and stay fixed).
 paper_comparison <- function(n = 10000, seed = 2026, spread = 0.2, step = function(i, k) {}) {
   combos <- expand.grid(structure = c("synchronous", "stable"), model = names(styer_pars), stringsAsFactors = FALSE)
   rows <- lapply(seq_len(nrow(combos)), function(i) {
@@ -656,17 +658,57 @@ paper_comparison <- function(n = 10000, seed = 2026, spread = 0.2, step = functi
     base <- c(vc_specs, mort_specs[[m]], pop_specs)[ids]
     fixed <- lapply(base, function(x) { x$dist <- "Fixed"; x })
     prob  <- lapply(base, function(x) { x$dist <- "Uniform"; x$min <- x$value * (1 - spread); x$max <- x$value * (1 + spread); x })
+    lit   <- Map(function(x, id) { x$dist <- lit_dists[[id]]; x }, base, names(base))
     det <- run_model(m, st, fixed, 2, seed)$ct[1]
     ct  <- run_model(m, st, prob, n, seed)$ct
+    ctl <- run_model(m, st, lit, n, seed)$ct
+    uni <- sprintf("Uniform +/-%g%%", 100 * spread)
     pub <- validation[[if (st == "stable") "Ct stable (published)" else "Ct synchronous (published)"]][validation$Model == m]
     step(i, nrow(combos))
-    data.frame(`Mortality model` = m, `Age structure` = st, `Styer et al. (published)` = pub,
-               Deterministic = det, `Difference from published (%)` = 100 * (det - pub) / pub,
-               `Probabilistic median` = median(ct), `Probabilistic mean` = mean(ct),
-               `2.5th percentile` = unname(quantile(ct, 0.025)), `97.5th percentile` = unname(quantile(ct, 0.975)),
-               check.names = FALSE)
+    out <- data.frame(`Mortality model` = m, `Age structure` = st, `Styer et al. (published)` = pub,
+                      Deterministic = det, `Difference from published (%)` = 100 * (det - pub) / pub,
+                      check.names = FALSE)
+    for (run in list(list(uni, ct), list("Literature-based", ctl)))
+      out[paste(run[[1]], c("median", "mean", "2.5th percentile", "97.5th percentile"))] <-
+        list(median(run[[2]]), mean(run[[2]]), unname(quantile(run[[2]], 0.025)), unname(quantile(run[[2]], 0.975)))
+    out
   })
   do.call(rbind, rows)
+}
+
+# Figure for the comparison table: for each mortality model, the published value (diamond), the deterministic
+# value (dot) and the median with 95% range of the two probabilistic runs. One panel per age structure.
+draw_paper <- function(tbl) {
+  uni <- sub(" median$", "", grep("^Uniform .* median$", names(tbl), value = TRUE)[1])
+  runs <- list(list(label = uni,                nudge =  0.2, col = adjustcolor("#E69F00", 0.75)),
+               list(label = "Literature-based", nudge = -0.2, col = adjustcolor("steelblue", 0.75)))
+  mods <- names(styer_pars)
+  nice <- c(exponential = "Exponential", gompertz = "Gompertz", logistic = "Logistic")
+  layout(matrix(c(1, 3, 2, 3), 2, 2), heights = c(1, 0.16))      # two panels above a strip for the legend
+  for (st in c("synchronous", "stable")) {
+    d <- tbl[tbl[["Age structure"]] == st, ]; d <- d[match(mods, d[["Mortality model"]]), ]
+    y <- rev(seq_along(mods))
+    xmax <- max(d[["Deterministic"]], unlist(lapply(runs, function(r) d[[paste(r$label, "97.5th percentile")]])))
+    par(mar = c(4.2, 6, 2.6, 1), mgp = c(2.4, 0.7, 0))
+    plot(NA, xlim = c(0, 1.04 * xmax), ylim = c(0.5, length(mods) + 0.5), yaxt = "n",
+         xlab = "Total vectorial capacity (Ct)", ylab = "",
+         main = if (st == "synchronous") "Synchronous emergence" else "Stable age distribution")
+    axis(2, at = y, labels = nice[d[["Mortality model"]]], las = 1, tick = FALSE)
+    abline(h = y, col = "grey92", lwd = 6)
+    for (r in runs) {
+      segments(d[[paste(r$label, "2.5th percentile")]], y + r$nudge, d[[paste(r$label, "97.5th percentile")]], y + r$nudge,
+               lwd = 9, col = r$col, lend = 1)
+      md <- d[[paste(r$label, "median")]]
+      segments(md, y + r$nudge - 0.1, md, y + r$nudge + 0.1, lwd = 2.5, col = "white")
+    }
+    points(d[["Styer et al. (published)"]], y, pch = 5, cex = 1.7, lwd = 1.6)
+    points(d[["Deterministic"]], y, pch = 16, cex = 0.8)
+  }
+  par(mar = c(0, 0, 0, 0)); plot.new()
+  legend("center", horiz = TRUE, bty = "n", cex = 0.9, x.intersp = 0.6,
+         legend = c("Published (Styer et al.)", "Deterministic",
+                    paste0(uni, ": median, 95% range"), "Literature-based: median, 95% range"),
+         pch = c(5, 16, 15, 15), col = c("black", "black", runs[[1]]$col, runs[[2]]$col), pt.cex = c(1.5, 1, 1.8, 1.8))
 }
 
 # The comparison never changes (fixed trials, seed and spread), so a copy computed ahead of time ships in
@@ -675,7 +717,7 @@ paper_comparison <- function(n = 10000, seed = 2026, spread = 0.2, step = functi
 PAPER_CACHE <- "www/pvec_comparison.csv"
 paper_table <- function(step = function(i, k) {}, cache = PAPER_CACHE) {
   r <- if (file.exists(cache)) tryCatch(read.csv(cache, check.names = FALSE, stringsAsFactors = FALSE), error = function(e) NULL)
-  if (is.data.frame(r) && nrow(r) == 6 && ncol(r) == 9) return(r)
+  if (is.data.frame(r) && nrow(r) == 6 && ncol(r) == 13) return(r)
   paper_comparison(step = step)
 }
 
@@ -1024,19 +1066,31 @@ ui <- fluidPage(
           p(class = "check-result",
             sprintf("Largest difference from a published value: %.1f%%. Published values are rounded to one decimal place, so small differences are expected.", max_dev)),
           h4("Comparison for the paper"),
-          p("Three results side by side for each mortality model and age structure: the value published by",
-            "Styer et al. (2007), this model run deterministically at their parameter values, and a fully",
-            "probabilistic run in which every assumption in use is drawn uniformly within plus or minus 20%",
-            "of that same value. Because the probabilistic run is centred on the deterministic one, the",
-            "difference between the two columns is the effect of parameter uncertainty alone. 10,000 trials,",
-            "random seed 2026. The growth rate r and first-bite age are varied too in the stable age distribution",
-            "(the first-bite age is rounded to a whole day when used). The table is precomputed with exactly these",
-            "settings, and the tests check it against the model, so Run comparison loads it at once."),
+          p("Four results side by side for each mortality model and age structure: the value published by",
+            "Styer et al. (2007); this model run deterministically at their parameter values; a probabilistic run",
+            "in which every assumption in use is drawn uniformly within plus or minus 20% of that same value; and a",
+            "probabilistic run with the literature-based distributions (the default preset). The uniform run is",
+            "centred on the deterministic one, so its difference from the deterministic value is the effect of",
+            "parameter uncertainty alone. 10,000 trials, random seed 2026. In the uniform run the growth rate r and",
+            "first-bite age are varied too in the stable age distribution (the first-bite age is rounded to a whole",
+            "day when used). The table is precomputed with exactly these settings, and the tests check it against",
+            "the model, so Run comparison loads it at once."),
           div(class = "dl-row",
               actionButton("run_paper", "Run comparison", class = "btn-primary btn-sm"),
               downloadButton("dl_paper", "Download CSV", class = "btn-sm")),
           div(class = "table-tools", copy_btn("paper_tbl")),
-          div(style = "overflow-x: auto;", tableOutput("paper_tbl"))),
+          div(style = "overflow-x: auto;", tableOutput("paper_tbl")),
+          p(class = "eq-note", style = "margin-top: 10px;",
+            "Read the two probabilistic runs differently. The uniform run is centred on the deterministic value, so it",
+            "isolates the effect of uncertainty. The literature-based run is a different scenario: its distributions are",
+            "centred on literature values for biting rate, mosquito density and vector competence that are lower than the",
+            "values Styer et al. used (for example, a mean biting rate of about 0.45 per day against their 0.75), so its",
+            "Ct is far lower. Do not read that gap as an effect of uncertainty. The growth rate r and first-bite age have",
+            "no published range, so they stay fixed in that run. The default r is solved so that the exponential,",
+            "stable-age case reproduces the published value, so that one row matches by construction; the other five",
+            "rows are independent checks."),
+          div(class = "dl-row", dl_png("paper_plot", "pvec_comparison.png")),
+          plotOutput("paper_plot", height = 430)),
         tabPanel("About",
           h4("What this tool does"),
           p("PVEC (Probabilistic VECtorial capacity) propagates uncertainty in transmission and mosquito mortality parameters",
@@ -1734,6 +1788,10 @@ server <- function(input, output, session) {
     if (is.null(r)) return(data.frame(` ` = "Click Run comparison to compute the table.", check.names = FALSE))
     r
   }, digits = 2)
+  output$paper_plot <- renderPlot({
+    req(paper_res())
+    draw_paper(paper_res())
+  }, alt = "For each mortality model and age structure, the published value, the deterministic value, and the median with 95% range of the uniform plus or minus 20% run and of the literature-based run.")
   output$dl_paper <- downloadHandler(
     filename = function() "pvec_comparison.csv",
     content  = function(file) {

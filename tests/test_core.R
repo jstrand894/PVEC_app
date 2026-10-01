@@ -123,8 +123,22 @@ for (mod in c("exponential", "gompertz", "logistic")) for (st in c("synchronous"
 pc1 <- paper_comparison(n = 3000, seed = 7); pc2 <- paper_comparison(n = 3000, seed = 7)
 check(nrow(pc1) == 6 && identical(pc1, pc2), "paper comparison has six rows and reproduces with the same seed")
 check(all(abs(pc1[["Difference from published (%)"]]) < 1), "deterministic column matches the published values within 1%")
-check(all(pc1[["2.5th percentile"]] < pc1$Deterministic & pc1$Deterministic < pc1[["97.5th percentile"]]) &&
-      all(abs(pc1[["Probabilistic median"]] / pc1$Deterministic - 1) < 0.1), "probabilistic runs are centred on the deterministic value")
+uni <- "Uniform +/-20%"
+check(all(pc1[[paste(uni, "2.5th percentile")]] < pc1$Deterministic & pc1$Deterministic < pc1[[paste(uni, "97.5th percentile")]]) &&
+      all(abs(pc1[[paste(uni, "median")]] / pc1$Deterministic - 1) < 0.1), "uniform runs are centred on the deterministic value")
+check(ncol(pc1) == 13 && all(pc1[["Literature-based 2.5th percentile"]] < pc1[["Literature-based median"]] &
+      pc1[["Literature-based median"]] < pc1[["Literature-based 97.5th percentile"]]), "literature-based run is included, with an interval around its median")
+# The literature-based column is the app's literature-based preset, run with the same trials and seed
+lit_row <- paper_comparison()
+for (k in 1:nrow(lit_row)) {
+  m <- lit_row[["Mortality model"]][k]; st <- lit_row[["Age structure"]][k]
+  ref <- run_model(m, st, mk_specs(m, st, "lit"), 10000, 2026)$ct
+  check(isTRUE(all.equal(median(ref), lit_row[["Literature-based median"]][k])) &&
+        isTRUE(all.equal(unname(quantile(ref, 0.975)), lit_row[["Literature-based 97.5th percentile"]][k])),
+        sprintf("literature-based column equals the app's literature preset (%s, %s)", m, st))
+}
+fig <- tempfile(fileext = ".pdf"); pdf(fig); ok_fig <- tryCatch({ draw_paper(pc1); TRUE }, error = function(e) FALSE); dev.off()
+check(ok_fig, "comparison figure draws from the table")
 
 # The precomputed table shipped with the app must equal what the model gives now. If this fails, run deploy.R.
 cache <- "app/www/pvec_comparison.csv"
