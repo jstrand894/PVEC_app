@@ -1097,7 +1097,7 @@ ui <- fluidPage(
           div(class = "table-tools", copy_btn("stats")),
           tableOutput("stats")),
         tabPanel("Sensitivity",
-          helpText("Which assumptions move Ct most. The default, the partial rank correlation coefficient (PRCC),",
+          helpText("Which assumptions move Ct the most? The default, the partial rank correlation coefficient (PRCC),",
                    "is the rank correlation between one assumption and Ct after removing the effect of all the",
                    "others, from -1 to 1, with a 95% interval. Blue bars raise Ct and orange bars lower it.",
                    "Assumptions that are fixed do not vary and are left out. If you have linked assumptions",
