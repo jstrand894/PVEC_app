@@ -679,6 +679,7 @@ assumption_ui <- function(id, s) {
     div(class = "assump-warn", id = paste0(id, "_warn")),
     div(class = "assump-err", id = paste0(id, "_err")),
     div(class = "assump-body", id = paste0("body_", id),
+     div(class = "assump-body-clip", div(class = "assump-body-pad",
       div(class = "assump-desc", descs[[id]]),
       if (id %in% names(card_notes)) div(class = "assump-note", card_notes[[id]]),
       selectInput(paste0(id, "_dist"), "Distribution", dist_choices, s$dist),
@@ -691,7 +692,7 @@ assumption_ui <- function(id, s) {
       conditionalPanel(shows(id, "Beta"),
         fluidRow(column(6, num(id, "shape1", "Shape 1", s)), column(6, num(id, "shape2", "Shape 2", s)))),
       conditionalPanel(shows(id, c("Normal", "Lognormal")),
-        fluidRow(column(6, num(id, "mean", "Mean", s)), column(6, num(id, "sd", "SD", s))))))
+        fluidRow(column(6, num(id, "mean", "Mean", s)), column(6, num(id, "sd", "SD", s))))))))
 }
 
 # A chip in the jump bar at the top of Define assumptions
@@ -847,17 +848,25 @@ ui <- fluidPage(
     .assump-card { margin: 0; }
     .assump-toggle { display: flex; gap: 6px; align-items: flex-start; flex: 1; border: 0; background: none; padding: 0;
       text-align: left; cursor: pointer; font-size: 14px; color: inherit; }
-    .chev { flex: none; font-size: 10px; margin-top: 5px; color: #5a6268; transition: transform .15s; }
+    .chev { flex: none; font-size: 10px; margin-top: 5px; color: #5a6268; transition: transform .25s ease; }
     .assump-card.open .chev, .adv-open .chev { transform: rotate(90deg); }
     .assump-summary { font-size: 12px; color: #444; margin: 3px 0 2px 16px; line-height: 1.3; }
-    .assump-body { display: none; margin-top: 8px; padding-top: 8px; border-top: 1px solid #e3e3e3; }
-    .assump-card.open .assump-body { display: block; }
+    /* Open and close: the row height animates between 0 and its natural height, the content fades,
+       and a closed body is hidden from the keyboard and screen readers once it has finished closing */
+    .assump-body, .adv-body { display: grid; grid-template-rows: 0fr; visibility: hidden;
+      transition: grid-template-rows .3s ease, visibility 0s linear .3s; }
+    .assump-card.open .assump-body, .adv-open .adv-body { grid-template-rows: 1fr; visibility: visible;
+      transition: grid-template-rows .3s ease, visibility 0s; }
+    .assump-body-clip, .adv-clip { overflow: hidden; min-height: 0; }
+    .assump-body-pad { margin-top: 8px; padding-top: 8px; border-top: 1px solid #e3e3e3; opacity: 0;
+      transition: opacity .15s ease; }
+    .assump-card.open .assump-body-pad { opacity: 1; transition: opacity .25s ease .1s; }
+    .adv-clip > .link-box { margin-top: 8px; opacity: 0; transition: opacity .15s ease; }
+    .adv-open .adv-clip > .link-box { opacity: 1; transition: opacity .25s ease .1s; }
     .adv-toggle { display: flex; gap: 6px; align-items: center; border: 0; background: none; padding: 4px 0;
       cursor: pointer; font-size: 16px; text-align: left; }
     .adv-tag { font-size: 11px; color: #5a6268; border: 1px solid #ccd3da; border-radius: 9px; padding: 0 7px; }
     .adv-status { font-size: 12.5px; color: #5a6268; margin-left: 4px; }
-    .adv-body { display: none; margin-top: 8px; }
-    .adv-open .adv-body { display: block; }
     .draws-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 10px; }
     .draw-tile { cursor: zoom-in; border: 1px solid #e3e3e3; border-radius: 6px; padding: 4px; background: #fff;
       transition: box-shadow .15s, border-color .15s; }
@@ -913,7 +922,8 @@ ui <- fluidPage(
       .tabbable { display: block !important; }
       .tab-content { overflow: visible !important; height: auto !important; padding: 0 !important; }
       .well { break-inside: avoid; }
-      .assump-body, .adv-body { display: block !important; }
+      .assump-body, .adv-body { grid-template-rows: 1fr !important; visibility: visible !important; }
+      .assump-body-pad, .adv-clip > .link-box { opacity: 1 !important; }
       img { max-width: 100% !important; }
       .print-only { display: block; font-size: 12px; color: #444; margin: 0 0 10px; }
     }
@@ -1048,7 +1058,7 @@ ui <- fluidPage(
                         `aria-controls` = "link_body",
                         span(class = "chev", icon("chevron-right")), strong("Linking assumptions"),
                         span(class = "adv-tag", "advanced"), span(id = "link_status", class = "adv-status")),
-            div(class = "link-box adv-body", id = "link_body",
+            div(class = "adv-body", id = "link_body", div(class = "adv-clip", div(class = "link-box",
               p(class = "assump-desc",
                 "By default every assumption is drawn on its own. If assumptions move together, for example",
                 "mortality a and b estimated from the same data, linking them changes how wide the forecast is.",
@@ -1066,7 +1076,7 @@ ui <- fluidPage(
                 fileInput("up_file", NULL, buttonLabel = "Upload parameter draws (CSV)", placeholder = "",
                           accept = ".csv", width = "auto"),
                 downloadButton("dl_template", "Download template", class = "btn-sm")),
-              uiOutput("up_status")))),
+              uiOutput("up_status")))))),
         tabPanel("Forecast",
           uiOutput("forecast_summary"),
           div(class = "no-print",
