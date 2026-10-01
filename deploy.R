@@ -7,7 +7,12 @@ today <- sub(" 0", " ", format(Sys.Date(), "%B %d, %Y"), fixed = TRUE)
 src <- sub('^LAST_UPDATED <- ".*"', sprintf('LAST_UPDATED <- "%s"', today), src)
 writeLines(src, "app/app.R")
 
-# 2. Export with a proper page title, browser-tab icon and loading message
+# 2. Rebuild the precomputed comparison table that the Model check tab loads (see PAPER_CACHE in app.R)
+app_env <- new.env()
+suppressMessages(source("app/app.R", local = app_env))
+write.csv(app_env$paper_comparison(), "app/www/pvec_comparison.csv", row.names = FALSE)
+
+# 3. Export with a proper page title, browser-tab icon and loading message
 favicon <- paste0("data:image/svg+xml,",
                   utils::URLencode(paste(readLines("app/www/pvec_icon.svg", warn = FALSE), collapse = ""), reserved = TRUE))
 

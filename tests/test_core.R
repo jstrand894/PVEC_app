@@ -24,6 +24,39 @@ a <- run_model("logistic", "stable", mk_specs("logistic", "stable", "lit"), 200,
 check(identical(a$ct, b$ct), "the same seed reproduces the same result")
 check(!identical(a$ct, run_model("logistic", "stable", mk_specs("logistic", "stable", "lit"), 200, 8)$ct), "a different seed gives a different result")
 
+# --- The block-at-a-time model gives the same Ct as the one-trial-at-a-time functions ---------------------
+scalar_ct <- function(model, structure, d, b, s) vapply(seq_len(nrow(d)), function(i) {
+  lt <- life_table(hazard(model, AGES, d$mort_a[i], b[i], s[i]))
+  Cx <- age_specific_vc(lt, d$n_eip[i], d$m_dens[i] * d$a_bite[i]^2, d$vec_comp[i])
+  if (structure == "stable") ct_stable(lt, Cx, d$growth_r[i], pmin(pmax(round(d$first_bite[i]), 0), N_CLASS - 1)) else ct_synchronous(Cx)
+}, 0)
+for (mod in c("exponential", "gompertz", "logistic")) for (st in c("synchronous", "stable")) {
+  spc <- mk_specs(mod, st, "lit")
+  if (st == "stable") for (id in names(pop_specs)) { spc[[id]]$dist <- "Uniform" }
+  rr <- run_model(mod, st, spc, 300, 4, chunk = 70)                        # 70 does not divide 300: uneven last block
+  d <- rr$draws; d$n_eip <- pmin(pmax(round(d$n_eip), 1), 150)
+  check(max(abs(rr$ct / scalar_ct(mod, st, d, rr$b, rr$s) - 1)) < 1e-9, sprintf("block model equals the one-trial-at-a-time model (%s, %s)", mod, st))
+}
+wide <- mk_specs("logistic", "stable", "lit")                             # extreme ranges: hazards that overflow exp()
+wide$mort_b$dist <- "Uniform"; wide$mort_b$min <- 0.5; wide$mort_b$max <- 3; wide$n_eip$min <- 1; wide$n_eip$max <- 150
+rw <- run_model("logistic", "stable", wide, 100, 2); dw <- rw$draws; dw$n_eip <- pmin(pmax(round(dw$n_eip), 1), 150)
+check(all(is.finite(rw$ct)) && max(abs(rw$ct / scalar_ct("logistic", "stable", dw, rw$b, rw$s) - 1)) < 1e-9, "block model handles hazards that overflow, like the one-trial model")
+check(identical(run_model("gompertz", "stable", mk_specs("gompertz", "stable", "lit"), 700, 5, chunk = 50)$ct,
+                run_model("gompertz", "stable", mk_specs("gompertz", "stable", "lit"), 700, 5, chunk = 700)$ct), "block size does not change the result")
+steps <- c(); invisible(run_model("exponential", "synchronous", mk_specs("exponential", "synchronous", "lit"), 600, 1, progress = function(i, n) steps <<- c(steps, i)))
+check(identical(as.numeric(steps), c(250, 500, 600)), "progress is reported after each block and ends at the number of trials")
+
+# A run leaves the session's random-number stream as it was
+set.seed(99); invisible(run_model("exponential", "synchronous", mk_specs("exponential", "synchronous", "lit"), 50, 1)); after <- runif(1)
+set.seed(99); check(identical(after, runif(1)), "running a simulation does not disturb the session's random numbers")
+
+# The report's image encoder agrees with standard base64
+check(identical(b64_encode(charToRaw("Man")), "TWFu") && identical(b64_encode(charToRaw("Ma")), "TWE="), "base64 encoder matches the standard")
+
+# A card's preview is the same every time it is drawn
+set.seed(1); pa <- qdraw(ppoints(1000), sp("Beta", 0, 0.25, 0.4, 0.76, 0, 0, 2, 3)); set.seed(2); pb <- qdraw(ppoints(1000), sp("Beta", 0, 0.25, 0.4, 0.76, 0, 0, 2, 3))
+check(identical(pa, pb), "distribution previews do not depend on random numbers")
+
 # --- Sampling ------------------------------------------------------------------------------------
 set.seed(3)
 ok <- vapply(setdiff(dist_choices, "Fixed"), function(dn) { s <- sp("Fixed", 0.5, 0.2, 0.4, 0.9, 0.5, 0.1, 2, 3); s$dist <- dn
@@ -92,6 +125,14 @@ check(nrow(pc1) == 6 && identical(pc1, pc2), "paper comparison has six rows and 
 check(all(abs(pc1[["Difference from published (%)"]]) < 1), "deterministic column matches the published values within 1%")
 check(all(pc1[["2.5th percentile"]] < pc1$Deterministic & pc1$Deterministic < pc1[["97.5th percentile"]]) &&
       all(abs(pc1[["Probabilistic median"]] / pc1$Deterministic - 1) < 0.1), "probabilistic runs are centred on the deterministic value")
+
+# The precomputed table shipped with the app must equal what the model gives now. If this fails, run deploy.R.
+cache <- "app/www/pvec_comparison.csv"
+fresh <- paper_comparison()
+saved <- if (file.exists(cache)) read.csv(cache, check.names = FALSE, stringsAsFactors = FALSE)
+check(!is.null(saved) && identical(names(saved), names(fresh)) && identical(saved[[1]], fresh[[1]]) && identical(saved[[2]], fresh[[2]]) &&
+      all(abs(as.matrix(saved[-(1:2)]) - as.matrix(fresh[-(1:2)])) < 1e-8), "precomputed comparison table is up to date (otherwise run deploy.R)")
+check(identical(paper_table(cache = cache), saved) && identical(paper_table(cache = "no_such_file.csv")[[1]], fresh[[1]]), "comparison table loads from the saved copy and falls back to computing it")
 
 if (!all(unlist(results))) stop(sprintf("%d check(s) failed", sum(!unlist(results))), call. = FALSE)
 cat(sprintf("\nAll %d checks passed.\n", length(results)))

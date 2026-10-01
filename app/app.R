@@ -392,11 +392,49 @@ generate_draws <- function(specs, n, pairs = NULL, uploaded = NULL) {
   list(draws = d, notes = notes, achieved = achieved)
 }
 
+# The age-specific model for a block of trials at once. Rows are trials and columns are ages 0 to
+# MAX_AGE, so each loop below runs over ages and every step works on all trials together. It does the
+# same arithmetic as hazard(), life_table(), age_specific_vc() and ct_synchronous()/ct_stable() applied
+# to one trial at a time (the tests check this). `n_eip` must be whole days between 1 and 150, and
+# `r` and `sigma` are needed only for the stable age distribution.
+ct_batch <- function(model, a, b, s, n_eip, MA2, vec_comp, r = NULL, sigma = NULL) {
+  k  <- length(a); na <- MAX_AGE + 1L
+  U  <- if (model == "exponential") matrix(a, k, na) else {
+    E <- exp(outer(b, AGES))
+    if (model == "gompertz") a * E else a * E / (1 + (a * s / b) * (E - 1))
+  }
+  bad <- which(is.nan(U))
+  if (length(bad)) U[bad] <- (b / s)[(bad - 1L) %% k + 1L]     # logistic plateau if exp() overflows
+  H <- matrix(0, k, na)                                         # cumulative hazard before each age
+  for (j in 2:na) H[, j] <- H[, j - 1L] + U[, j - 1L]
+  rm(U)
+  lx <- pmax(exp(-H), 1e-300)
+  Tx <- matrix(0, k, na); Tx[, na] <- lx[, na]
+  for (j in (na - 1L):1L) Tx[, j] <- Tx[, j + 1L] + lx[, j]
+  ex <- Tx / lx - 0.5; rm(Tx)
+  x    <- 0:(N_CLASS - 1)
+  rows <- rep(seq_len(k), N_CLASS)
+  at_n <- cbind(rows, rep(x, each = k) + rep(n_eip, N_CLASS) + 1L)     # the column for age x + n
+  Cx   <- MA2 * exp(H[, x + 1L] - matrix(H[at_n], k, N_CLASS)) * matrix(ex[at_n], k, N_CLASS) * vec_comp
+  Cx[!is.finite(Cx)] <- 0
+  if (is.null(r)) return(rowMeans(Cx[, 4:7, drop = FALSE]))
+  w <- lx[, seq_len(N_CLASS)] * exp(-outer(r, x))
+  w <- w / rowSums(w)
+  w[col(w) < round(sigma) + 1] <- 0                             # too young to have taken a first bite
+  rowSums(Cx * w)
+}
+
 # One simulation: draw the parameter sets, then run the age-specific model for each trial.
 # `specs` is a named list of assumption specs for the assumptions in use (including growth_r and
 # first_bite when the age structure is stable). Same code path for the app and the tests.
+# Trials are run in blocks of `chunk` so memory stays small and progress can be reported.
 run_model <- function(model, structure, specs, n, seed, pairs = NULL, uploaded = NULL,
-                      progress = function(done, n) {}) {
+                      progress = function(done, n) {}, chunk = 250L) {
+  # Seeding makes the run reproducible, but leave the session's random stream as it was, so other
+  # random choices (the shuffle-seed button) are not fixed by the seed of the last run
+  old <- if (exists(".Random.seed", envir = globalenv(), inherits = FALSE)) get(".Random.seed", envir = globalenv())
+  on.exit(if (is.null(old)) suppressWarnings(rm(".Random.seed", envir = globalenv()))
+          else assign(".Random.seed", old, envir = globalenv()), add = TRUE)
   set.seed(seed)
   g <- generate_draws(specs, n, pairs, uploaded)
   d <- g$draws
@@ -410,11 +448,11 @@ run_model <- function(model, structure, specs, n, seed, pairs = NULL, uploaded =
     sig_i <- pmin(pmax(round(d$first_bite), 0), N_CLASS - 1)
   }
   ct <- numeric(n)
-  for (i in seq_len(n)) {
-    lt <- life_table(hazard(model, AGES, d$mort_a[i], b_i[i], s_i[i]))
-    Cx <- age_specific_vc(lt, d$n_eip[i], d$m_dens[i] * d$a_bite[i]^2, d$vec_comp[i])
-    ct[i] <- if (stable) ct_stable(lt, Cx, r_i[i], sig_i[i]) else ct_synchronous(Cx)
-    if (i %% 100 == 0) progress(i, n)
+  for (from in seq(1L, n, by = chunk)) {
+    i <- from:min(from + chunk - 1L, n)
+    ct[i] <- ct_batch(model, d$mort_a[i], b_i[i], s_i[i], d$n_eip[i], d$m_dens[i] * d$a_bite[i]^2,
+                      d$vec_comp[i], if (stable) r_i[i], if (stable) sig_i[i])
+    progress(max(i), n)
   }
   list(ct = ct, draws = d, b = b_i, s = s_i, notes = g$notes, achieved = g$achieved)
 }
@@ -445,8 +483,7 @@ sens_contrib <- function(res) {
        prcc = prcc_calc(d[varied], res$ct))
 }
 
-draw_sens <- function(res, metric = "prcc") {
-  sc <- sens_contrib(res)
+draw_sens <- function(res, metric = "prcc", sc = sens_contrib(res)) {
   if (is.null(sc)) {
     plot.new(); text(0.5, 0.5, "No assumptions are varying, so there is nothing to rank")
     return(invisible())
@@ -583,16 +620,7 @@ soft_warning <- function(id, s) {
 }
 
 # Base64 text for a raw vector (the report embeds figures as data URIs)
-b64_encode <- function(raw) {
-  chars <- c(LETTERS, letters, 0:9, "+", "/")
-  pad   <- (3 - length(raw) %% 3) %% 3
-  m     <- matrix(c(as.integer(raw), rep(0L, pad)), nrow = 3)
-  v     <- m[1, ] * 65536 + m[2, ] * 256 + m[3, ]
-  idx   <- cbind(v %/% 262144, (v %/% 4096) %% 64, (v %/% 64) %% 64, v %% 64) + 1
-  out   <- chars[t(idx)]
-  if (pad > 0) out[(length(out) - pad + 1):length(out)] <- "="
-  paste(out, collapse = "")
-}
+b64_encode <- function(raw) jsonlite::base64_enc(raw)
 
 # Draw to a temporary PNG and return it as base64, or NULL if this R cannot make PNG files
 png_b64 <- function(drawer, w, h) {
@@ -639,6 +667,16 @@ paper_comparison <- function(n = 10000, seed = 2026, spread = 0.2, step = functi
                check.names = FALSE)
   })
   do.call(rbind, rows)
+}
+
+# The comparison never changes (fixed trials, seed and spread), so a copy computed ahead of time ships in
+# www/ and loads instantly. deploy.R rebuilds it, and the tests fail if it no longer matches the model.
+# If the copy is missing or unreadable, the table is computed instead.
+PAPER_CACHE <- "www/pvec_comparison.csv"
+paper_table <- function(step = function(i, k) {}, cache = PAPER_CACHE) {
+  r <- if (file.exists(cache)) tryCatch(read.csv(cache, check.names = FALSE, stringsAsFactors = FALSE), error = function(e) NULL)
+  if (is.data.frame(r) && nrow(r) == 6 && ncol(r) == 9) return(r)
+  paper_comparison(step = step)
 }
 
 build_report <- function(res, bounds, prev = NULL, run_labels = NULL, thresh = NA) {
@@ -728,7 +766,7 @@ preview_plot <- function(s) {
     polygon(c(s$min, s$min, s$max, s$max), c(0, 1, 1, 0),
             col = adjustcolor("steelblue", 0.5), border = "steelblue")
   } else {
-    x  <- draw(3000, s)
+    x  <- qdraw(ppoints(1000), s)     # evenly spaced quantiles: a stable shape, and no random numbers used
     dn <- density(x, from = min(x), to = max(x), adjust = 1.3)
     plot(dn$x, dn$y, type = "n", yaxt = "n", xlab = "", ylab = "", bty = "n")
     polygon(c(dn$x[1], dn$x, tail(dn$x, 1)), c(0, dn$y, 0),
@@ -820,301 +858,7 @@ ui <- fluidPage(
   tags$button(id = "expand_sidebar", type = "button", class = "sidebar-arrow-open",
               title = "Show settings", `aria-label` = "Show settings", `aria-expanded` = "false",
               icon("chevron-right")),
-  tags$head(tags$style(HTML("
-    @media (max-width: 767px) { html { overflow-y: scroll; } }
-    .container-fluid { padding-top: 14px; }
-    .container-fluid > h2 { margin: 8px 0 28px; }
-    .app-brand { display: flex; align-items: center; gap: 14px; }
-    .app-logo { height: 38px; width: auto; display: block; }
-    .app-brand-text { font-size: 22px; font-weight: 400; color: #444; line-height: 1.2; }
-    @media (max-width: 500px) { .app-brand-text { font-size: 16px; } .app-logo { height: 30px; } }
-    body { padding-bottom: 36px; }
-    .app-footer { position: fixed; left: 0; bottom: 0; z-index: 1000; padding: 4px 14px;
-      font-size: 12px; color: #5a6268; background: rgba(255,255,255,0.9);
-      border-top-right-radius: 6px; }
-    .well { padding: 12px 14px; }
-    .well a:not(.btn) { color: #286090; }
-    .well .form-group { margin-bottom: 8px; }
-    .well label.control-label { margin-bottom: 2px; font-size: 13px; }
-    .well .form-control { height: 30px; padding: 3px 8px; font-size: 13px; }
-    .well .selectize-input { min-height: 30px; padding: 4px 8px; }
-    #n_iter + .selectize-control.single .selectize-input { padding-right: 22px; font-size: 12px; white-space: nowrap; }
-    .well .row > [class*='col-'] { padding-left: 5px; padding-right: 5px; }
-    .well .row { margin-left: -5px; margin-right: -5px; }
-    #shiny-notification-panel { position: static; width: 100%; margin-top: 10px; }
-    #shiny-notification-panel .shiny-notification { position: relative; width: 100%;
-      margin: 0 0 8px; right: auto; z-index: 1100; }
-    #tabs > li > a[data-value='Forecast']::before,
-    #tabs > li > a[data-value='Sensitivity']::before,
-    #tabs > li > a[data-value='Assumption draws']::before,
-    #tabs > li > a[data-value='Survival curves']::before {
-      content: ''; display: inline-block; box-sizing: border-box; width: 7px; height: 7px;
-      margin: 0 8.5px 0 1.5px; border-radius: 50%; border: 1.5px solid #6c757d; background: transparent;
-      vertical-align: middle; position: relative; top: -1px;
-      transition: background-color .3s, border-color .3s, box-shadow .3s; }
-    /* Three pulses, each a ring that expands and fades while the steady glow stays put, so after
-       the third pulse the dot simply stays lit with no jump. */
-    #tabs > li > a.tab-new::before { background: #6f42c1; border-color: #6f42c1;
-      box-shadow: 0 0 0 0 rgba(111,66,193,0), 0 0 6px 2px rgba(111,66,193,0.5);
-      animation: dot-pulse 1.2s ease-out 3; }
-    @keyframes dot-pulse {
-      0%   { box-shadow: 0 0 0 0 rgba(111,66,193,0.6), 0 0 6px 2px rgba(111,66,193,0.5); }
-      75%  { box-shadow: 0 0 0 10px rgba(111,66,193,0), 0 0 6px 2px rgba(111,66,193,0.5); }
-      100% { box-shadow: 0 0 0 10px rgba(111,66,193,0), 0 0 6px 2px rgba(111,66,193,0.5); } }
-    .assump-desc { font-size: 11px; line-height: 1.3; color: #5a6268; margin: 2px 0 8px; }
-    .tab-pane.active { animation: fade-in .25s ease-out; }
-    @keyframes fade-in { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
-    .recalculating { opacity: 0.55 !important; transition: opacity .2s; }
-    .stale-note { animation: slide-in .25s ease-out; }
-    @keyframes slide-in { from { opacity: 0; transform: translateY(-4px); } to { opacity: 1; transform: none; } }
-    #preset .radio label span, .btn { transition: background-color .15s, border-color .15s, color .15s; }
-    #run.running { opacity: 0.75; cursor: progress; }
-    @media (prefers-reduced-motion: reduce) {
-      *, *::before { animation: none !important; transition: none !important; } }
-    .stale-note { font-size: 12px; color: #8a5a00; background: #fff4d6; border: 1px solid #f0d58a;
-      border-radius: 4px; padding: 5px 8px; margin-top: 8px; }
-    .preset-reset { font-size: 12px; margin: 0 0 8px; }
-    .assump-invalid { border-color: #dc3545 !important; box-shadow: 0 0 0 1px #dc3545; }
-    .assump-err { color: #b02a37; font-size: 12px; margin-top: 4px; }
-    .assump-err:empty { display: none; }
-    .check-result { font-size: 13px; color: #555; margin-top: 8px; }
-    input:-moz-ui-invalid { box-shadow: none; }
-    input:disabled, .form-control:disabled { background: #eceeef; color: #8a9096; cursor: not-allowed; }
-    /* Fixed frame on larger screens: title, settings and tab bar stay put; only tab content scrolls */
-    @media (min-width: 768px) {
-      html, body { height: 100%; overflow: hidden; }
-      body { padding-bottom: 0; }
-      .container-fluid { height: 100vh; display: flex; flex-direction: column; padding-bottom: 34px; }
-      .container-fluid > h2 { flex: none; margin: 6px 0 18px; }
-      .container-fluid > .row { flex: 1 1 auto; min-height: 0; display: flex; }
-      .container-fluid > .row::before, .container-fluid > .row::after { content: none; }
-      .container-fluid > .row > .col-sm-3 { overflow-y: auto; max-height: 100%; padding-bottom: 8px; }
-      .container-fluid > .row > .col-sm-9 { display: flex; flex-direction: column; min-height: 0; }
-      .container-fluid > .row > .col-sm-9 > .tabbable { display: flex; flex-direction: column; flex: 1 1 auto; min-height: 0; }
-      .tabbable > .nav-tabs { flex: none; }
-      .tabbable > .tab-content { flex: 1 1 auto; min-height: 0; overflow-y: scroll; overflow-x: hidden;
-        padding: 0 6px 0 0; }
-      /* Spacer at rest; once you scroll it sticks under the tabs and blurs what slides beneath */
-      .tabbable > .tab-content::before { content: ''; display: block; position: sticky; top: 0; z-index: 20;
-        height: 22px; pointer-events: none;
-        background: linear-gradient(to bottom, rgba(255,255,255,0.92), rgba(255,255,255,0));
-        -webkit-backdrop-filter: blur(7px); backdrop-filter: blur(7px);
-        -webkit-mask-image: linear-gradient(to bottom, #000 55%, transparent);
-        mask-image: linear-gradient(to bottom, #000 55%, transparent); }
-      /* Slide-out settings panel: the column keeps its width and slides off to the left */
-      .container-fluid > .row > .col-sm-3 { transition: margin-left .35s ease, opacity .3s ease, visibility 0s linear 0s; }
-      .container-fluid > .row > .col-sm-9 { transition: width .35s ease, margin-left .35s ease; }
-      .sidebar-collapsed > .row > .col-sm-3 { margin-left: -25%; opacity: 0; visibility: hidden;
-        pointer-events: none; transition: margin-left .35s ease, opacity .25s ease, visibility 0s linear .35s; }
-      .sidebar-collapsed > .row > .col-sm-9 { width: calc(100% - 30px); margin-left: 30px; }
-      .sidebar-collapsed .sidebar-arrow-open { opacity: 1; visibility: visible; transition: opacity .3s ease .25s, visibility 0s; }
-    }
-    .howto { position: relative; background: #eef5fb; border: 1px solid #cfe0f0; border-radius: 6px;
-      padding: 11px 14px 12px; font-size: 13px; margin-bottom: 14px; }
-    .howto-title { font-weight: 700; font-size: 14px; margin-bottom: 8px; }
-    .howto-steps { display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: 10px; }
-    .howto-step { display: flex; gap: 10px; align-items: flex-start; background: #fff;
-      border: 1px solid #d6e4f0; border-radius: 6px; padding: 9px 11px; }
-    .howto-num { flex: none; width: 24px; height: 24px; border-radius: 50%; background: #286090; color: #fff;
-      font-weight: 700; font-size: 13px; line-height: 24px; text-align: center; }
-    .howto-step-title { font-weight: 700; font-size: 13px; margin-bottom: 1px; }
-    .howto-step-text { font-size: 12.5px; line-height: 1.4; color: #333; }
-    .howto-step-text kbd { font-size: 11px; padding: 0 5px; color: #333; background: #f3f5f7;
-      border: 1px solid #ccd3da; border-radius: 3px; box-shadow: none; white-space: nowrap; }
-    .howto-note { margin-top: 9px; font-size: 12px; color: #444; display: flex; align-items: center; gap: 7px; }
-    .legend-dot { flex: none; width: 7px; height: 7px; border-radius: 50%; background: #6f42c1;
-      box-shadow: 0 0 5px 1px rgba(111,66,193,0.5); }
-    .howto-close { position: absolute; top: 3px; right: 8px; border: 0; background: none;
-      font-size: 20px; line-height: 1; color: #5a6268; cursor: pointer; }
-    .tab-content { padding-top: 16px; }
-    @media (min-width: 768px) { .tab-content { padding-top: 0; } }
-    #rand_seed { font-size: 14px; margin-left: 5px; text-decoration: none; }
-    .settings-io { display: flex; flex-wrap: wrap; gap: 8px; align-items: flex-start; justify-content: flex-start; margin: 0 0 10px; }
-    .settings-io .form-group { margin: 0; height: 30px; width: auto; }
-    .settings-io .input-group { display: block; }
-    .settings-io .input-group .form-control { display: none; }
-    .settings-io .input-group-btn { display: block; width: auto; }
-    .settings-io .btn-file, .settings-io .btn { border-radius: 3px; font-size: 12px; padding: 0 12px; height: 30px;
-      line-height: 28px; margin: 0; display: inline-block; box-sizing: border-box; }
-    .settings-io .progress { display: none; }
-    .dist-help { font-size: 11px; line-height: 1.3; color: #5a6268; margin: -2px 0 8px; }
-    .assump-card.card-off { position: relative; }
-    .assump-card.card-off > * { opacity: 0.5; filter: grayscale(1); }
-    .assump-card.card-off::after { content: ''; position: absolute; top: 0; right: 0; bottom: 0; left: 0;
-      cursor: not-allowed; z-index: 5; }
-    .assump-card.card-off::before { content: attr(data-tip); position: absolute; left: 50%; top: 50%; z-index: 10;
-      transform: translate(-50%, -50%); width: 86%; padding: 6px 10px; border-radius: 4px; text-align: center;
-      font-size: 12px; line-height: 1.3; color: #fff; background: rgba(33, 37, 41, 0.92); pointer-events: none;
-      opacity: 0; transition: opacity .15s ease; }
-    .assump-card.card-off:hover::before { opacity: 1; }
-    @media (prefers-reduced-motion: reduce) { .assump-card.card-off::before { transition: none; } }
-    .fit-help { margin: 4px 0 8px; font-size: 12px; }
-    .fit-help summary { cursor: pointer; color: #286090; margin-bottom: 4px; }
-    .fit-help .fit-note, .fit-msg { font-size: 11px; line-height: 1.3; color: #5a6268; margin-bottom: 6px; }
-    .fit-msg.bad { color: #a94442; }
-    .assump-note { font-size: 11px; line-height: 1.3; color: #8a5a00; background: #fff9e8; border: 1px solid #f0e0a8;
-      border-radius: 4px; padding: 4px 6px; margin: 0 0 8px; }
-    .link-box { background: #f7f7f7; border: 1px solid #e3e3e3; border-radius: 6px; padding: 10px 14px 12px; margin-bottom: 14px; }
-    .corr-add { margin-top: 25px; }
-    .corr-row { font-size: 13px; padding: 3px 0; border-bottom: 1px solid #ececec; }
-    .corr-row a { margin-left: 10px; font-size: 12px; }
-    .corr-row.inactive { color: #5a6268; }
-    .assump-upload { color: #1f5f99; font-size: 12px; margin-top: 4px; }
-    .assump-upload:empty { display: none; }
-    .assump-uploaded { border-left: 3px solid #337ab7; }
-    .jump-bar { position: sticky; top: 0; z-index: 25; background: #fff; display: flex; flex-wrap: wrap;
-      align-items: center; gap: 6px; padding: 7px 0 8px; margin-bottom: 10px; border-bottom: 1px solid #e3e3e3; }
-    .jump-chip { border: 1px solid #c8ced3; background: #fff; color: #333; border-radius: 14px; padding: 2px 11px;
-      font-size: 12.5px; cursor: pointer; transition: background-color .15s, color .15s, border-color .15s; }
-    .jump-chip:hover { background: #f0f4f8; }
-    .jump-chip { position: relative; }
-    .jump-chip[data-tip]::after { content: attr(data-tip); position: absolute; left: 0; top: calc(100% + 8px); z-index: 40;
-      width: 250px; padding: 6px 10px; border-radius: 4px; text-align: left; white-space: normal;
-      font-size: 12px; line-height: 1.35; color: #fff; background: rgba(33, 37, 41, 0.94); pointer-events: none;
-      opacity: 0; visibility: hidden; transition: opacity .15s ease .3s, visibility 0s linear .45s; }
-    .jump-chip[data-tip]:hover::after, .jump-chip[data-tip]:focus-visible::after { opacity: 1; visibility: visible;
-      transition: opacity .15s ease .3s, visibility 0s linear .3s; }
-    @media (prefers-reduced-motion: reduce) { .jump-chip[data-tip]::after { transition: none; } }
-    .jump-chip.active { background: #337ab7; border-color: #2e6da4; color: #fff; }
-    .jump-count { margin-left: 6px; font-size: 11px; opacity: 0.85; }
-    .jump-count:empty { display: none; }
-    .jump-actions { margin-left: auto; font-size: 12px; color: #5a6268; }
-    .jump-sep { margin: 0 6px; color: #9aa0a6; }
-    .link-btn { border: 0; background: none; padding: 0; color: #286090; cursor: pointer; font-size: inherit; }
-    .link-btn:hover { text-decoration: underline; }
-    .howto-open { display: none; font-size: 12.5px; margin: 0 0 8px; }
-    .assump-section { scroll-margin-top: 54px; margin-bottom: 16px; }
-    .cards-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(215px, 1fr)); gap: 12px; align-items: start; }
-    .assump-card { margin: 0; }
-    .assump-toggle { display: flex; gap: 6px; align-items: flex-start; flex: 1; border: 0; background: none; padding: 0;
-      text-align: left; cursor: pointer; font-size: 14px; color: inherit; }
-    .chev { flex: none; font-size: 10px; margin-top: 5px; color: #5a6268; transition: transform .25s ease; }
-    .assump-card.open .chev, .adv-open .chev { transform: rotate(90deg); }
-    .assump-summary { font-size: 12px; color: #444; margin: 3px 0 2px 16px; line-height: 1.3; }
-    /* Open and close: the row height animates between 0 and its natural height, the content fades,
-       and a closed body is hidden from the keyboard and screen readers once it has finished closing */
-    .assump-body, .adv-body { display: grid; grid-template-rows: 0fr; visibility: hidden;
-      transition: grid-template-rows .3s ease, visibility 0s linear .3s; }
-    .assump-card.open .assump-body, .adv-open .adv-body { grid-template-rows: 1fr; visibility: visible;
-      transition: grid-template-rows .3s ease, visibility 0s; }
-    .assump-body-clip, .adv-clip { overflow: hidden; min-height: 0; }
-    .assump-body-pad { margin-top: 8px; padding-top: 8px; border-top: 1px solid #e3e3e3; opacity: 0;
-      transition: opacity .15s ease; }
-    .assump-card.open .assump-body-pad { opacity: 1; transition: opacity .25s ease .1s; }
-    .adv-clip > .link-box { margin-top: 8px; opacity: 0; transition: opacity .15s ease; }
-    .adv-open .adv-clip > .link-box { opacity: 1; transition: opacity .25s ease .1s; }
-    .fold { margin: 6px 0 14px; }
-    .fold .adv-toggle strong { font-size: 18px; font-weight: 500; }
-    .adv-clip > .eq-pad { margin-top: 8px; opacity: 0; transition: opacity .15s ease; }
-    .adv-open .adv-clip > .eq-pad { opacity: 1; transition: opacity .25s ease .1s; }
-    .adv-toggle { display: flex; gap: 6px; align-items: center; border: 0; background: none; padding: 4px 0;
-      cursor: pointer; font-size: 16px; text-align: left; }
-    .adv-tag { font-size: 11px; color: #5a6268; border: 1px solid #ccd3da; border-radius: 9px; padding: 0 7px; }
-    .adv-status { font-size: 12.5px; color: #5a6268; margin-left: 4px; }
-    .draws-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 10px; }
-    .draw-tile { cursor: zoom-in; border: 1px solid #e3e3e3; border-radius: 6px; padding: 4px; background: #fff;
-      transition: box-shadow .15s, border-color .15s; }
-    .draw-tile:hover, .draw-tile:focus-visible { box-shadow: 0 2px 8px rgba(0,0,0,0.15); border-color: #337ab7; }
-    .assump-warn { color: #8a5a00; font-size: 12px; margin-top: 4px; }
-    .assump-warn:empty { display: none; }
-    a:focus-visible, button:focus-visible, .btn:focus-visible, input:focus-visible,
-    select:focus-visible, .selectize-input.focus, .nav-tabs > li > a:focus-visible {
-      outline: 2px solid #1a73e8; outline-offset: 2px; }
-    .btn-file:focus-within { outline: 2px solid #1a73e8; outline-offset: 2px; }
-    .assump-prev { margin-top: 4px; }
-    .container-fluid { position: relative; }
-    .settings-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px; }
-    .well { position: relative; }
-    .sidebar-arrow, .sidebar-arrow-open { border: 1px solid #ccc; background: #fff; color: #444; border-radius: 50%;
-      width: 24px; height: 24px; padding: 0; font-size: 11px; line-height: 22px; text-align: center; cursor: pointer;
-      transition: background-color .15s, color .15s, border-color .15s; }
-    .sidebar-arrow:hover, .sidebar-arrow-open:hover { background: #337ab7; border-color: #2e6da4; color: #fff; }
-    .sidebar-arrow-open { position: absolute; left: 15px; top: 76px; z-index: 30; opacity: 0; visibility: hidden;
-      transition: opacity .15s ease, visibility 0s linear .15s; }
-    @media (max-width: 767px) { .sidebar-arrow, .sidebar-arrow-open { display: none; } }
-    .assump-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 6px; }
-    .edited-tools { display: none; flex-direction: column; align-items: flex-end; font-size: 11px; line-height: 1.3; }
-    .edited-badge { display: none; background: #fff4d6; color: #8a5a00; border: 1px solid #f0d58a; border-radius: 9px;
-      padding: 0 7px; white-space: nowrap; }
-    .edited-tools a { display: none; }
-    .assump-changed .edited-tools, .assump-differs .edited-tools { display: flex; }
-    .assump-changed .edited-badge { display: inline-block; }
-    .assump-differs .edited-tools a { display: inline; }
-    .assump-changed { border-left: 3px solid #e0a800; }
-    .fade-btn { position: relative; }
-    .fade-btn .fb-a { display: inline-block; transition: opacity .25s ease .2s; }
-    .fade-btn .fb-b { position: absolute; top: 0; right: 0; bottom: 0; left: 0; display: flex;
-      align-items: center; justify-content: center; white-space: nowrap; opacity: 0;
-      transition: opacity .2s ease; pointer-events: none; }
-    /* Going in: old text fades out, then the confirmation fades in. Coming back: the reverse. */
-    .fade-btn .fb-icon { margin-right: 6px; }
-    .fade-btn.copied .fb-a { opacity: 0; transition: opacity .2s ease; }
-    .fade-btn.copied .fb-b { opacity: 1; transition: opacity .25s ease .2s; }
-    .compare-table table { font-size: 13px; margin: 4px 0 4px; }
-    .compare-table td, .compare-table th { padding: 3px 10px; border: 1px solid #ddd; }
-    .compare-table th { background: #f3f5f7; }
-    .table-tools { margin: 6px 0 4px; }
-    .print-only { display: none; }
-    @media print {
-      html, body { height: auto !important; overflow: visible !important; }
-      .container-fluid { height: auto !important; display: block !important; padding: 0 !important; }
-      .container-fluid > h2 { margin: 0 0 8px !important; }
-      .container-fluid > .row { display: block !important; }
-      .container-fluid > .row > .col-sm-3, .nav-tabs, .app-footer, .sidebar-arrow, .sidebar-arrow-open, .dl-row, .howto,
-      .settings-io, .no-print, .edited-tools, .jump-bar, .howto-open, .chev, .table-tools, .tab-content::before { display: none !important; }
-      .container-fluid > .row > .col-sm-9 { width: 100% !important; float: none !important; display: block !important; }
-      .tabbable { display: block !important; }
-      .tab-content { overflow: visible !important; height: auto !important; padding: 0 !important; }
-      .well { break-inside: avoid; }
-      .assump-body, .adv-body { grid-template-rows: 1fr !important; visibility: visible !important; }
-      .assump-body-pad, .adv-clip > .link-box, .adv-clip > .eq-pad { opacity: 1 !important; }
-      img { max-width: 100% !important; }
-      .print-only { display: block; font-size: 12px; color: #444; margin: 0 0 10px; }
-    }
-    .dl-row { margin: 4px 0 10px; }
-    .dl-row .btn { margin-right: 6px; }
-    .forecast-summary { font-size: 15px; margin: 6px 0 4px; }
-    .forecast-note { font-size: 12px; color: #5a6268; margin: 0 0 8px; }
-    .cert-text { margin-top: 25px; }
-    .eq { font-family: 'Times New Roman', Times, serif; font-size: 17px; background: #f7f9fb; border-left: 3px solid #7030A0;
-      padding: 8px 14px; margin: 8px 0 12px; overflow-x: auto; white-space: nowrap; }
-    .eq .fr { display: inline-block; vertical-align: middle; text-align: center; margin: 0 3px; }
-    .eq .fr > span { display: block; padding: 0 4px; line-height: 1.25; }
-    .eq .fr > span + span { border-top: 1px solid #333; }
-    .eq .sm { display: inline-block; vertical-align: middle; text-align: center; margin: 0 3px; line-height: 1.05; }
-    .eq .sm > span { display: block; font-size: 11px; }
-    .eq-note { font-size: 13px; color: #555; margin: -4px 0 12px; }
-    .app-meta { font-size: 12px; color: #5a6268; }
-    .run-status { font-size: 12px; color: #555; margin-top: 6px; }
-    .start-over { font-size: 12px; margin-top: 10px; }
-    #preset > label.control-label { display: block; margin-bottom: 4px; }
-    #preset .shiny-options-group { margin-top: 0; }
-    #preset .radio { margin: 0 0 4px; }
-    #preset .radio label { display: block; padding: 0; width: 100%; }
-    #preset input[type=radio] { position: absolute; opacity: 0; pointer-events: none; }
-    #preset .radio label span { display: block; padding: 5px 10px; font-size: 13px; border: 1px solid #ccc;
-      border-radius: 4px; background: #fff; color: #333; cursor: pointer; }
-    #preset .radio label:hover span { background: #f0f0f0; }
-    #preset .radio label:hover input:checked + span { background: #2e6da4; }
-    #preset input:checked + span { background: #337ab7; border-color: #2e6da4; color: #fff; }
-    #preset input:checked + span::before { content: '\\2713  '; font-weight: bold; }
-    #preset input:focus-visible + span { outline: 2px solid #66afe9; outline-offset: 1px; }
-    .preset-desc { font-size: 11px; line-height: 1.3; color: #555; margin: 0 0 8px; }
-    .author-card { display: flex; align-items: center; gap: 24px; max-width: 640px;
-      padding: 20px 24px; background: #f8f9fa; border: 1px solid #e3e6ea;
-      border-radius: 12px; box-shadow: 0 2px 6px rgba(0,0,0,0.06); }
-    .author-photo { width: 130px; height: 130px; flex: none; border-radius: 50%;
-      object-fit: cover; border: 3px solid #fff; box-shadow: 0 1px 4px rgba(0,0,0,0.25); }
-    .author-label { font-size: 12px; letter-spacing: 0.08em; text-transform: uppercase;
-      color: #5a6268; margin-bottom: 2px; }
-    .author-text h4 { margin: 0 0 6px; }
-    .author-text p { margin: 0 0 6px; }
-    .author-link { font-size: 14px; margin-bottom: 0 !important; }
-    .author-note { color: #555; font-size: 14px; }
-    @media (max-width: 767px) { .well .row > .col-sm-6 { width: 50%; float: left; }
-      .well .row > .col-sm-7 { width: 58.33%; float: left; } .well .row > .col-sm-5 { width: 41.67%; float: left; } }
-    @media (max-width: 520px) { .author-card { flex-direction: column; text-align: center; } }
-  "))),
+  tags$head(tags$link(rel = "stylesheet", type = "text/css", href = "pvec.css")),
   div(class = "print-only", textOutput("run_status_print")),
   sidebarLayout(
     sidebarPanel(width = 3,
@@ -1286,7 +1030,8 @@ ui <- fluidPage(
             "of that same value. Because the probabilistic run is centred on the deterministic one, the",
             "difference between the two columns is the effect of parameter uncertainty alone. 10,000 trials,",
             "random seed 2026. The growth rate r and first-bite age are varied too in the stable age distribution",
-            "(the first-bite age is rounded to a whole day when used)."),
+            "(the first-bite age is rounded to a whole day when used). The table is precomputed with exactly these",
+            "settings, and the tests check it against the model, so Run comparison loads it at once."),
           div(class = "dl-row",
               actionButton("run_paper", "Run comparison", class = "btn-primary btn-sm"),
               downloadButton("dl_paper", "Download CSV", class = "btn-sm")),
@@ -1383,7 +1128,7 @@ ui <- fluidPage(
               h4("Jackson R. Strand"),
               p("PhD student, Montana State University"),
               p(class = "author-note",
-                "Developed this tool to make probabilistic vectorial capacity forecasts."),
+                "Jackson is an entomologist who studies insect ecology and biological control, with a background in chemical ecology and plant-insect interactions. He frequently works with Bayesian statistics and simulation in R, and he built PVEC to make probabilistic vectorial capacity forecasts accessible to anyone who wants to explore how parameter uncertainty shapes transmission risk."),
               p(class = "author-link",
                 tags$a(href = "https://www.jackson-strand.com", target = "_blank",
                        rel = "noopener", "www.jackson-strand.com")))))
@@ -1393,368 +1138,9 @@ ui <- fluidPage(
   # The copyright year follows the last-updated date, so deploy.R keeps both current
   div(class = "app-footer",
       HTML(paste0("&copy; ", sub(".*, ", "", LAST_UPDATED), " Jackson R. Strand &nbsp;&middot;&nbsp; Last updated: ", LAST_UPDATED))),
-  # Shiny deletes and recreates its notification panel for each pop-up or progress bar,
-  # so watch for it and move it under the settings box every time
-  tags$script(HTML("
-    $(function() {
-      var well = $('.well').first();
-      function rehome() {
-        var p = document.getElementById('shiny-notification-panel');
-        if (p && p.previousElementSibling !== well[0]) well.after(p);
-      }
-      new MutationObserver(rehome).observe(document.body, {childList: true});
-      rehome();
-
-      // Show a busy state on the Run button, delayed so quick updates do not flicker
-      var busyTimer = null;
-      $(document).on('shiny:busy', function() {
-        busyTimer = setTimeout(function() { $('#run').addClass('running').prop('disabled', true).text('Running...'); }, 250);
-      });
-      $(document).on('shiny:idle', function() {
-        clearTimeout(busyTimer);
-        $('#run').removeClass('running').prop('disabled', false).text('Run simulation');
-      });
-
-      // Save any plot exactly as shown (buttons carry the plot id and file name)
-      $(document).on('click', '.dl-img', function() {
-        var img = $('#' + $(this).data('target') + ' img')[0];
-        var name = $(this).data('file') || 'plot.png';
-        if (!img) return;
-        fetch(img.src).then(function(r) { return r.blob(); }).then(function(blob) {
-          var a = document.createElement('a');
-          a.href = URL.createObjectURL(blob);
-          a.download = name;
-          document.body.appendChild(a); a.click(); a.remove();
-          setTimeout(function() { URL.revokeObjectURL(a.href); }, 1000);
-        });
-      });
-
-      // Click (or Enter / Space) on a draws tile asks the app for the enlarged plot
-      function expandTile(el) { Shiny.setInputValue('expand_draw', $(el).data('id'), {priority: 'event'}); }
-      $(document).on('click', '.draw-tile', function() { expandTile(this); });
-      $(document).on('keydown', '.draw-tile', function(e) {
-        if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); expandTile(this); }
-      });
-
-      // Save all the draws tiles as one image, three to a row
-      $(document).on('click', '.dl-grid', function() {
-        var imgs = $('#' + $(this).data('target') + ' img').toArray();
-        var name = $(this).data('file') || 'plots.png';
-        if (!imgs.length) return;
-        var cols = Math.min(3, imgs.length), w = imgs[0].naturalWidth, h = imgs[0].naturalHeight;
-        var c = document.createElement('canvas');
-        c.width = cols * w; c.height = Math.ceil(imgs.length / cols) * h;
-        var ctx = c.getContext('2d'); ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, c.width, c.height);
-        imgs.forEach(function(im, i) { ctx.drawImage(im, (i % cols) * w, Math.floor(i / cols) * h, w, h); });
-        c.toBlob(function(blob) {
-          var a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = name;
-          document.body.appendChild(a); a.click(); a.remove();
-          setTimeout(function() { URL.revokeObjectURL(a.href); }, 1000);
-        });
-      });
-
-      // Allow loading the same settings file twice in a row
-      $(document).on('click', '#load_settings', function() { this.value = ''; });
-
-      // Red outline and message on an assumption box with invalid values
-      Shiny.addCustomMessageHandler('assumpErr', function(errs) {
-        Object.keys(errs).forEach(function(id) {
-          var msg = errs[id] || '';
-          $('#' + id + '_err').text(msg);
-          if (msg !== '') $('#card_' + id).addClass('open').find('.assump-toggle').attr('aria-expanded', 'true');
-          $('#' + id + '_dist').closest('.well').toggleClass('assump-invalid', msg !== '');
-        });
-      });
-
-      Shiny.addCustomMessageHandler('assumpWarn', function(w) {
-        Object.keys(w).forEach(function(id) { $('#' + id + '_warn').text(w[id] || ''); });
-      });
-
-      // Cmd or Ctrl + Enter runs the simulation
-      $(document).on('keydown', function(e) {
-        if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
-          e.preventDefault();
-          if (document.activeElement) document.activeElement.blur();
-          setTimeout(function() { if (!$('#run').prop('disabled')) $('#run').click(); }, 60);
-        }
-      });
-
-      // Copy text to the clipboard, with a fallback for pages where the clipboard API is blocked
-      function copyText(text) {
-        return new Promise(function(resolve) {
-          function fallback() {
-            var ta = document.createElement('textarea');
-            ta.value = text; ta.style.position = 'fixed'; ta.style.opacity = 0;
-            document.body.appendChild(ta); ta.select();
-            var ok = false;
-            try { ok = document.execCommand('copy'); } catch (e) {}
-            ta.remove(); resolve(ok);
-          }
-          if (navigator.clipboard && window.isSecureContext) {
-            navigator.clipboard.writeText(text).then(function() { resolve(true); }, fallback);
-          } else { fallback(); }
-        });
-      }
-      function flash(btn, text, success) {
-        var b = btn.find('.fb-b'), msg = b.find('.fb-msg');
-        (msg.length ? msg : b).text(text);
-        b.find('.fb-icon').toggle(!!success);
-        btn.addClass('copied');
-        clearTimeout(btn.data('flashTimer'));
-        btn.data('flashTimer', setTimeout(function() { btn.removeClass('copied'); }, 2450));  // 0.45s fade-in + 2s on screen
-      }
-
-      // Copy a table as tab-separated text, which pastes into Excel or Word as a table
-      $(document).on('click', '.copy-table', function() {
-        var btn = $(this);
-        var rows = $('#' + btn.data('target') + ' table tr').map(function() {
-          return $(this).find('th, td').map(function() { return $(this).text().trim(); }).get().join('\\t');
-        }).get();
-        if (!rows.length) { flash(btn, 'Nothing to copy yet'); return; }
-        window.__lastCopied = rows.join('\\n');
-        copyText(window.__lastCopied).then(function(ok) { flash(btn, ok ? 'Copied!' : 'Copy failed', ok); });
-      });
-
-      // Shareable link: every setting goes into the address after the # sign
-      var settingIds = ['a_bite', 'n_eip', 'm_dens', 'vec_comp', 'mort_a', 'mort_b', 'mort_s', 'growth_r', 'first_bite'];
-      var settingFields = ['value', 'min', 'mode', 'max', 'mean', 'sd', 'shape1', 'shape2'];
-      function topWin() { try { void window.top.location.href; return window.top; } catch (e) { return window; } }
-      function settingsParams() {
-        var p = new URLSearchParams();
-        p.set('model', $('#mort_model').val()); p.set('structure', $('#structure').val());
-        p.set('trials', $('#n_iter').val()); p.set('seed', $('#seed').val());
-        settingIds.forEach(function(id) {
-          p.set(id + '.dist', $('#' + id + '_dist').val());
-          var src = $('#' + id + '_source').val();
-          if (src) p.set(id + '.source', src);
-          settingFields.forEach(function(f) {
-            var v = $('#' + id + '_' + f).val();
-            if (v !== undefined && v !== null && v !== '') p.set(id + '.' + f, v);
-          });
-        });
-        (window.__corr || []).forEach(function(c, i) { p.set('corr.' + (i + 1), c); });
-        return p;
-      }
-      $(document).on('click', '#copy_link', function() {
-        var btn = $(this), w = topWin();
-        var url = w.location.href.split('#')[0] + '#' + settingsParams().toString();
-        window.__lastLink = url;
-        try { w.history.replaceState(null, '', url); } catch (e) {}
-        copyText(url).then(function(ok) { flash(btn, ok ? 'Copied!' : 'See address bar', ok); });
-      });
-      function sendHashSettings() {
-        var h = topWin().location.hash.replace(/^#/, '');
-        if (!h) return;
-        var p = new URLSearchParams(h);
-        if (!p.has('model')) return;
-        var o = {}; p.forEach(function(v, k) { o[k] = v; });
-        Shiny.setInputValue('url_settings', o, {priority: 'event'});
-      }
-      if (Shiny.shinyapp && Shiny.shinyapp.isConnected()) { sendHashSettings(); }
-      else { $(document).one('shiny:connected', sendHashSettings); }
-
-      // Hide or show the settings panel so the results can use the full width
-      function setSidebar(collapsed) {
-        $('.container-fluid').first().toggleClass('sidebar-collapsed', collapsed);
-        $('#collapse_sidebar').attr('aria-expanded', String(!collapsed));
-        $('#expand_sidebar').attr('aria-expanded', String(!collapsed));
-        // Let the slide finish, then redraw plots at the new width and move keyboard focus to the arrow that is now visible
-        setTimeout(function() {
-          $(window).trigger('resize');
-          $(collapsed ? '#expand_sidebar' : '#collapse_sidebar').trigger('focus');
-        }, 380);
-      }
-      $(document).on('click', '#collapse_sidebar', function() { setSidebar(true); });
-      $(document).on('click', '#expand_sidebar', function() { setSidebar(false); });
-
-      // Cards whose values come from uploaded draws, and the correlation list (needed for the share link)
-      Shiny.addCustomMessageHandler('uploadedCards', function(up) {
-        window.__upCount = 0;
-        Object.keys(up).forEach(function(id) {
-          var msg = up[id] || '';
-          if (msg !== '') window.__upCount++;
-          $('#' + id + '_up').text(msg);
-          $('#' + id + '_dist').closest('.well').toggleClass('assump-uploaded', msg !== '');
-        });
-        $(document).trigger('vc:linkstate');
-        setTimeout(refreshAll, 50);
-      });
-      window.__corr = [];
-      Shiny.addCustomMessageHandler('corrState', function(c) { window.__corr = c || []; $(document).trigger('vc:linkstate'); });
-
-      // ---- Compact assumption cards, section jump bar, Advanced panel, Getting started ----
-      var cardSections = {
-        sec_transmission: ['a_bite', 'n_eip', 'm_dens', 'vec_comp'],
-        sec_mortality: ['mort_a', 'mort_b', 'mort_s'],
-        sec_population: ['growth_r', 'first_bite']
-      };
-      function fmtNum(v) { var n = parseFloat(v); return isNaN(n) ? '?' : String(parseFloat(n.toPrecision(3))); }
-      function cardSummary(id) {
-        var d = $('#' + id + '_dist').val(), f = function(k) { return fmtNum($('#' + id + '_' + k).val()); };
-        if (d === 'Fixed') return 'Fixed at ' + f('value') + (id === 'growth_r' ? ' (calibrated, see card)' : '');
-        if (d === 'Uniform') return 'Uniform, ' + f('min') + ' to ' + f('max');
-        if (d === 'Triangular' || d === 'PERT') return d + ', ' + f('min') + ' to ' + f('max') + ', likeliest ' + f('mode');
-        if (d === 'Beta') return 'Beta, ' + f('min') + ' to ' + f('max') + ', shapes ' + f('shape1') + ' and ' + f('shape2');
-        if (d === 'Normal' || d === 'Lognormal') return d + ', mean ' + f('mean') + ', SD ' + f('sd') + ', limits ' + f('min') + ' to ' + f('max');
-        return '';
-      }
-      function setTip(chip, text) { chip.attr('data-tip', text).attr('aria-label', $.trim(chip.clone().children().remove().end().text()) + ': ' + text); }
-      function refreshCounts() {
-        Object.keys(cardSections).forEach(function(sec) {
-          var chip = $('.jump-chip[data-target=\"' + sec + '\"]'), shown = $('#' + sec).is(':visible');
-          chip.toggle(shown);
-          if (!shown) return;
-          if ($('#' + sec + ' .card-off').length) { chip.find('.jump-count').text(''); setTip(chip, 'Not used with synchronous emergence.'); return; }
-          var vis = cardSections[sec].filter(function(id) { return $('#card_' + id).is(':visible'); });
-          var varying = vis.filter(function(id) { return $('#' + id + '_dist').val() !== 'Fixed' || $('#card_' + id).hasClass('assump-uploaded'); });
-          var n = varying.length, m = vis.length;
-          chip.find('.jump-count').text(n + '/' + m);
-          setTip(chip, n === m ? 'All ' + m + ' assumptions here are drawn from a distribution, so each adds uncertainty to the forecast.'
-                 : n === 0 ? 'None of these ' + m + ' assumptions are varying. Each is fixed at one value, so they add no uncertainty. Open a card and pick a distribution to vary one.'
-                 : n + ' of ' + m + ' assumptions here are drawn from a distribution. The other ' + (m - n) + (m - n === 1 ? ' is' : ' are') + ' fixed at one value.');
-        });
-      }
-      function refreshLinkStatus() {
-        var n = (window.__corr || []).length, u = window.__upCount || 0, parts = [];
-        if (n) parts.push(n + (n === 1 ? ' correlation' : ' correlations'));
-        if (u) parts.push('uploaded draws for ' + u + (u === 1 ? ' assumption' : ' assumptions'));
-        $('#link_status').text(parts.length ? parts.join(', ') : 'none set');
-        var lc = $('.jump-chip[data-target=\"sec_linking\"]');
-        lc.find('.jump-count').text(parts.length ? 'on' : '');
-        setTip(lc, parts.length ? 'Linking is on: ' + parts.join(', ') + '.' : 'Nothing is linked, so every assumption is drawn independently. Open this section to set correlations or upload joint draws.');
-      }
-      // With synchronous emergence the population cards are not used, so grey them out and explain on hover
-      function refreshStructure() {
-        var off = $('#structure').val() === 'synchronous';
-        $('#sec_population .assump-card').each(function() {
-          var c = $(this).toggleClass('card-off', off);
-          if (off) c.removeClass('open').attr('data-tip', 'Synchronous emergence does not use a growth rate or a first-bite age.');
-          else c.removeAttr('data-tip');
-          c.find('.assump-toggle').attr({'aria-expanded': 'false', 'aria-disabled': String(off), tabindex: off ? -1 : 0});
-        });
-      }
-      function refreshAll() {
-        refreshStructure();
-        $('.assump-card').each(function() {
-          var id = this.id.replace('card_', '');
-          $('#' + id + '_summary').text($(this).hasClass('assump-uploaded') ? 'From uploaded draws' : cardSummary(id));
-        });
-        refreshCounts(); refreshLinkStatus();
-      }
-      var refreshTimer = null;
-      function scheduleRefresh() { clearTimeout(refreshTimer); refreshTimer = setTimeout(refreshAll, 120); }
-      $(document).on('input change', '.assump-card :input', scheduleRefresh);
-      $(document).on('shiny:inputchanged', function(e) {
-        if (/_dist$|_value$|_min$|_max$|_mode$|_mean$|_sd$|_shape[12]$|^mort_model$|^structure$/.test(e.name)) scheduleRefresh();
-      });
-      $(document).on('vc:linkstate', refreshLinkStatus);
-      setTimeout(refreshAll, 600); setTimeout(refreshAll, 2000);
-
-      // Open and close cards in place; several can stay open together
-      $(document).on('click', '.assump-toggle', function() {
-        var card = $(this).closest('.assump-card'), open = !card.hasClass('open');
-        if (card.hasClass('card-off')) return;
-        card.toggleClass('open', open); $(this).attr('aria-expanded', String(open));
-      });
-      $(document).on('click', '#expand_all', function() {
-        $('.assump-card:not(.card-off)').addClass('open').find('.assump-toggle').attr('aria-expanded', 'true'); setLink(true);
-      });
-      $(document).on('click', '#collapse_all', function() {
-        $('.assump-card').removeClass('open').find('.assump-toggle').attr('aria-expanded', 'false'); setLink(false);
-      });
-
-      // The Linking panel is advanced, so it starts closed
-      function setLink(open) {
-        $('#sec_linking').toggleClass('adv-open', open); $('#link_toggle').attr('aria-expanded', String(open));
-      }
-      $(document).on('click', '#eq_toggle', function() {
-        var open = !$('#eq_fold').hasClass('adv-open');
-        $('#eq_fold').toggleClass('adv-open', open); $(this).attr('aria-expanded', String(open));
-      });
-      $(document).on('click', '#link_toggle', function() { setLink(!$('#sec_linking').hasClass('adv-open')); });
-
-      // Jump bar: scroll to a section (animated, instant if reduced motion is on) and highlight the current one
-      function pageScroller() { return window.innerWidth >= 768 ? document.querySelector('.tab-content') : null; }
-      function scrollToSection(id) {
-        var el = document.getElementById(id); if (!el) return;
-        var sc = pageScroller(), y0 = sc ? sc.scrollTop : window.scrollY;
-        var y1 = Math.max(0, y0 + el.getBoundingClientRect().top - (sc ? sc.getBoundingClientRect().top : 0) - 50);
-        function set(y) { if (sc) { sc.scrollTop = y; } else { window.scrollTo(0, y); } }
-        if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) { set(y1); return; }
-        var t0 = null;
-        function step(ts) {
-          if (t0 === null) t0 = ts;
-          var p = Math.min(1, (ts - t0) / 280), e = 1 - Math.pow(1 - p, 3);
-          set(y0 + (y1 - y0) * e); if (p < 1) requestAnimationFrame(step);
-        }
-        requestAnimationFrame(step);
-      }
-      var forcedChip = null, forcedUntil = 0;
-      $(document).on('click', '.jump-chip', function() {
-        var t = $(this).data('target'); if (t === 'sec_linking') setLink(true);
-        forcedChip = t; forcedUntil = Date.now() + 1500;      // light the chip at once, even if the page cannot scroll that far
-        scrollToSection(t); spy();
-      });
-      var spyQueued = false;
-      function spy() {
-        spyQueued = false;
-        var sc = pageScroller(), base = sc ? sc.getBoundingClientRect().top : 0, active = null;
-        var secs = $('.assump-section:visible');
-        secs.each(function() {
-          if (active === null || this.getBoundingClientRect().top - base <= 70) active = this.id;
-        });
-        var atBottom = sc ? (sc.scrollTop + sc.clientHeight >= sc.scrollHeight - 2)
-                          : (window.scrollY + window.innerHeight >= document.documentElement.scrollHeight - 2);
-        if (atBottom && secs.length && sc && sc.scrollTop > 0) active = secs.last().attr('id');
-        if (forcedChip && Date.now() < forcedUntil && $('#' + forcedChip).is(':visible')) active = forcedChip;
-        $('.jump-chip').removeClass('active').filter('[data-target=\"' + active + '\"]').addClass('active');
-      }
-      document.addEventListener('scroll', function() { if (!spyQueued) { spyQueued = true; requestAnimationFrame(spy); } }, true);
-      setTimeout(spy, 700);
-
-      // Getting started: dismissal is remembered (when the browser allows it) and leaves a one-line link
-      function setHowto(show) {
-        if (show) { $('#howto').slideDown(150); $('#howto_open').hide(); try { localStorage.removeItem('vc_howto'); } catch (e) {} }
-        else { $('#howto').slideUp(150); $('#howto_open').show(); try { localStorage.setItem('vc_howto', 'dismissed'); } catch (e) {} }
-      }
-      $(document).on('click', '.howto-close', function() { setHowto(false); });
-      $(document).on('click', '#howto_open', function() { setHowto(true); });
-      try { if (localStorage.getItem('vc_howto') === 'dismissed') { $('#howto').hide(); $('#howto_open').show(); } } catch (e) {}
-
-      // Start over: drop any settings from the address, then reload the app
-      Shiny.addCustomMessageHandler('startOver', function(msg) {
-        try { var w = topWin(); w.history.replaceState(null, '', w.location.pathname + w.location.search); } catch (e) {}
-        window.location.reload();
-      });
-
-      // Per card: a not-run-yet badge when it changed since the last run, a reset link when it differs from the preset
-      Shiny.addCustomMessageHandler('cardStates', function(st) {
-        Object.keys(st).forEach(function(id) {
-          $('#' + id + '_dist').closest('.well')
-            .toggleClass('assump-changed', !!st[id].changed)
-            .toggleClass('assump-differs', !!st[id].differs);
-        });
-      });
-
-      // Purple dot on result tabs when a run has produced new results you have not viewed yet
-      var resultTabs = ['Forecast', 'Sensitivity', 'Assumption draws', 'Survival curves'];
-      Shiny.addCustomMessageHandler('newResults', function(msg) {
-        // On phones the results sit below the settings, so bring them into view
-        if (window.innerWidth < 768 && !window.__firstRunDone) { window.__firstRunDone = true; }
-        else if (window.innerWidth < 768) { setTimeout(function() { $('#tabs')[0].scrollIntoView(); }, 400); }
-        resultTabs.forEach(function(v) {
-          var a = $('#tabs a[data-value=\"' + v + '\"]');
-          if (!a.parent().hasClass('active')) a.addClass('tab-new').attr({title: 'New results', 'aria-label': v + ', new results'});
-        });
-      });
-      $(document).on('shown.bs.tab', '#tabs a', function() {
-        $(this).removeClass('tab-new').removeAttr('title').removeAttr('aria-label');
-        // All tabs share one scroll area, so a position left on a long tab would carry over and show only the bottom of a short one
-        var sc = pageScroller(); if (sc) sc.scrollTop = 0;
-        setTimeout(spy, 50);
-      });
-    });
-  "))
+  # Page behaviour (notification panel, cards, jump bar, share link, downloads) is in www/pvec.js,
+  # and the styling is in www/pvec.css, so the browser can cache both
+  tags$script(src = "pvec.js")
 )
 
 # ---- Server ----
@@ -2016,21 +1402,26 @@ server <- function(input, output, session) {
   observeEvent(input$reset_preset, apply_preset(input$preset))
 
   # The preset's own spec for one assumption (what "unedited" means)
-  preset_spec <- function(id) {
-    sp <- c(vc_specs, mort_specs[[input$mort_model]], pop_specs)[[id]]
-    sp$dist <- if (identical(input$preset, "lit")) lit_dists[[id]] else "Fixed"
+  preset_spec <- function(id, model = input$mort_model, preset = input$preset) {
+    sp <- c(vc_specs, mort_specs[[model]], pop_specs)[[id]]
+    sp$dist <- if (identical(preset, "lit")) lit_dists[[id]] else "Fixed"
     sp
   }
 
   # Mark assumption cards whose values differ from the preset, and let each be reset on its own
   run_specs  <- reactiveVal(NULL)     # the assumption values used in the most recent run
   last_cards <- reactiveVal(NULL)
+  # Wait for a pause in typing (300 ms) before comparing every card with its preset and the last run
+  card_inputs <- debounce(reactive(list(
+    model = input$mort_model, structure = input$structure, preset = input$preset,
+    specs = lapply(setNames(setting_ids, setting_ids), get_spec))), 300)
   observe({
     rs  <- run_specs()
-    act <- active_ids(input$mort_model, input$structure)
+    ci  <- card_inputs()
+    act <- active_ids(ci$model, ci$structure)
     st  <- lapply(setNames(setting_ids, setting_ids), function(id) {
-      cur <- get_spec(id)
-      list(differs = !same_spec(cur, preset_spec(id)),
+      cur <- ci$specs[[id]]
+      list(differs = !same_spec(cur, preset_spec(id, ci$model, ci$preset)),
            changed = !is.null(rs) && id %in% act && (!(id %in% names(rs)) || !same_spec(cur, rs[[id]])))
     })
     if (!identical(st, isolate(last_cards()))) {
@@ -2059,12 +1450,14 @@ server <- function(input, output, session) {
   })
 
   # Snapshot of everything that feeds a run, to tell when results are out of date
-  cur_sig <- reactive({
+  cur_sig_now <- reactive({
     ids <- active_ids(input$mort_model)
     list(model = input$mort_model, structure = input$structure,
          n = input$n_iter, seed = input$seed, corr = corr_pairs(), upload = uploaded()$sig,
          specs = lapply(setNames(ids, ids), get_spec))
   })
+  # The warning waits for a pause in typing. A run records the exact current snapshot, not the delayed one.
+  cur_sig <- debounce(cur_sig_now, 300)
   run_sig <- reactiveVal(NULL)
 
   output$stale_note <- renderUI({
@@ -2100,7 +1493,7 @@ server <- function(input, output, session) {
     n  <- as.integer(input$n_iter)
     run <- withProgress(message = "Running trials", value = 0,
       run_model(model, input$structure, specs, n, input$seed, pairs = corr_pairs(), uploaded = uploaded(),
-                progress = function(i, n) incProgress(100 / n, detail = sprintf("%d of %d", i, n))))
+                progress = function(i, n) setProgress(i / n, detail = sprintf("%d of %d", i, n))))
     d <- run$draws; ct <- run$ct; b_i <- run$b; s_i <- run$s
 
     settings <- c(
@@ -2126,7 +1519,7 @@ server <- function(input, output, session) {
     history(c(tail(history(), 9), list(entry)))
     results_val(list(ct = ct, draws = d, model = model, b = b_i, s = s_i,
                      settings = settings, run = new_run))
-    run_sig(cur_sig())
+    run_sig(cur_sig_now())
     run_specs(specs)
     run_count(run_count() + 1)
 
@@ -2261,8 +1654,10 @@ server <- function(input, output, session) {
 
   output$stats <- renderTable(stats_df(results()$ct), digits = 3)
 
-  output$sens_plot <- renderPlot(draw_sens(results(), input$sens_metric), alt = reactive({
-    sc <- sens_contrib(results()); m <- input$sens_metric
+  # The ranking is computed once per run; switching the metric only redraws it
+  sens_res <- reactive(sens_contrib(results()))
+  output$sens_plot <- renderPlot(draw_sens(results(), input$sens_metric, sens_res()), alt = reactive({
+    sc <- sens_res(); m <- input$sens_metric
     if (is.null(sc)) "No assumptions vary, so there is nothing to rank."
     else if (identical(m, "prcc")) {
       k <- which.max(abs(sc$prcc$est))
@@ -2332,7 +1727,7 @@ server <- function(input, output, session) {
   paper_res <- reactiveVal(NULL)
   observeEvent(input$run_paper, {
     withProgress(message = "Running the comparison", value = 0,
-      paper_res(paper_comparison(step = function(i, k) incProgress(1 / k, detail = sprintf("%d of %d", i, k)))))
+      paper_res(paper_table(step = function(i, k) incProgress(1 / k, detail = sprintf("%d of %d", i, k)))))
   })
   output$paper_tbl <- renderTable({
     r <- paper_res()
@@ -2343,7 +1738,7 @@ server <- function(input, output, session) {
     filename = function() "pvec_comparison.csv",
     content  = function(file) {
       r <- paper_res()
-      if (is.null(r)) r <- paper_comparison()
+      if (is.null(r)) r <- paper_table()
       write.csv(r, file, row.names = FALSE)
     })
 }
