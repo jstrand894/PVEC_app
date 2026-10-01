@@ -8,7 +8,7 @@ or given a probability distribution. The simulation draws many parameter sets at
 reports the resulting distribution of total vectorial capacity (Ct), together with a
 sensitivity ranking of the inputs.
 
-**Use it in your browser:** https://jstrand894.github.io/vc_app/
+**Use it in your browser:** https://jstrand894.github.io/PVEC_app/
 
 The app runs entirely in your browser (R compiled to WebAssembly through
 [Shinylive](https://posit-dev.github.io/r-shinylive/)). There is no server, and nothing you
