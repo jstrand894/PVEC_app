@@ -1,0 +1,43 @@
+# Rebuilds the Shinylive site in docs/ whenever the app changes, so the published
+# version never lags behind app/app.R. You can also run it by hand from the Actions tab.
+name: Rebuild site
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "app/**"
+      - "deploy.R"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: r-lib/actions/setup-r@v2
+        with:
+          use-public-rspm: true
+
+      - uses: r-lib/actions/setup-r-dependencies@v2
+        with:
+          packages: any::shiny, any::shinylive
+
+      - name: Export the app (deploy.R also stamps the last-updated date)
+        run: Rscript deploy.R
+
+      - name: Commit the rebuilt site
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add app/app.R docs
+          if git diff --cached --quiet; then
+            echo "Site already up to date."
+          else
+            git commit -m "Rebuild site [skip ci]"
+            git push
+          fi

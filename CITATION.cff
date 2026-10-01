@@ -1,0 +1,52 @@
+cff-version: 1.2.0
+message: "If you use this software, please cite it using the metadata below."
+title: "Probabilistic Vectorial Capacity Simulator"
+type: software
+version: "1.0"
+date-released: 2026-10-01
+authors:
+  - family-names: Strand
+    given-names: "Jackson R."
+    affiliation: "Montana State University"
+repository-code: "https://github.com/jstrand894/vc_app"
+url: "https://jstrand894.github.io/vc_app/"
+license: MIT
+abstract: >-
+  An interactive tool that propagates uncertainty in transmission and mosquito
+  mortality parameters through an age-specific vectorial capacity model,
+  reporting the resulting distribution of vectorial capacity and a sensitivity
+  ranking of the inputs.
+keywords:
+  - vectorial capacity
+  - Monte Carlo simulation
+  - uncertainty analysis
+  - mosquito-borne disease
+references:
+  - type: article
+    authors:
+      - family-names: Styer
+        given-names: "Laura M."
+      - family-names: Carey
+        given-names: "James R."
+      - family-names: Wang
+        given-names: "Jane-Ling"
+      - family-names: Scott
+        given-names: "Thomas W."
+    title: "Mosquitoes do senesce: departure from the paradigm of constant mortality"
+    journal: "American Journal of Tropical Medicine and Hygiene"
+    volume: 76
+    start: 111
+    end: 117
+    year: 2007
+    doi: "10.4269/ajtmh.2007.76.111"
+  - type: article
+    authors:
+      - family-names: Garrett-Jones
+        given-names: "Christopher"
+    title: "Prognosis for interruption of malaria transmission through assessment of the mosquito's vectorial capacity"
+    journal: "Nature"
+    volume: 204
+    start: 1173
+    end: 1175
+    year: 1964
+    doi: "10.1038/2041173a0"
