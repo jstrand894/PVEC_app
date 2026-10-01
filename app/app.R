@@ -55,7 +55,7 @@ check_spec <- function(s, label) {
   NULL
 }
 
-# ---- Model pipeline (same math as Parts 3 to 5) ----
+# ---- Model pipeline ----
 hazard <- function(model, x, a, b, s) {
   u <- switch(model,
     logistic    = a * exp(b * x) / (1 + (a * s / b) * (exp(b * x) - 1)),
@@ -71,7 +71,6 @@ life_table <- function(u) {
   list(u = u, px = exp(-u), lx = lx, ex = Tx / lx - 0.5)
 }
 
-# Vectorized version of the Part 5 loop, identical result
 age_specific_vc <- function(lt, n, MA2, vec_comp = 1) {
   x    <- 0:(N_CLASS - 1)
   L    <- c(0, cumsum(-lt$u))
@@ -91,7 +90,7 @@ ct_stable <- function(lt, Cx, r, sigma) {
   sum(Cx[keep] * w[keep])
 }
 
-# ---- Styer validation and r, computed once at startup ----
+# ---- Model check against published values, and r, computed once at startup ----
 styer_pars <- list(
   exponential = c(a = 0.0313, b = 0,      s = 0),
   gompertz    = c(a = 0.0066, b = 0.0623, s = 0),
@@ -139,7 +138,7 @@ mort_specs <- list(
     mort_b = sp("Fixed", 0,      0,    0,      1,    0,      0.1),
     mort_s = sp("Fixed", 0,      0,    0,      5,    0,      0.1)))
 
-# Distributions used in the Part 10 run
+# Default distribution for each assumption (literature-based)
 lit_dists <- c(a_bite = "Beta", n_eip = "Uniform", m_dens = "Uniform", vec_comp = "Beta",
                mort_a = "Normal", mort_b = "Normal", mort_s = "Normal")
 
@@ -160,7 +159,11 @@ shows <- function(id, dists)
 
 num <- function(id, f, label, s) numericInput(paste0(id, "_", f), label, s[[f]], width = "100%")
 
+# Open on the literature-based distributions rather than fixed point values
+with_default_dist <- function(id, s) { s$dist <- lit_dists[[id]]; s }
+
 assumption_ui <- function(id, s) {
+  s <- with_default_dist(id, s)
   wellPanel(
     strong(labels[[id]]),
     selectInput(paste0(id, "_dist"), "Distribution", dist_choices, s$dist),
@@ -178,7 +181,7 @@ assumption_ui <- function(id, s) {
 
 # ---- UI ----
 ui <- fluidPage(
-  titlePanel("Vectorial capacity Monte Carlo, Styer et al. 2007 reconstruction"),
+  titlePanel("Probabilistic vectorial capacity simulator"),
   sidebarLayout(
     sidebarPanel(width = 3,
       selectInput("mort_model", "Mortality model",
@@ -191,9 +194,9 @@ ui <- fluidPage(
       numericInput("seed", "Random seed", 1),
       hr(),
       radioButtons("preset", "Load a preset",
-                   c("Styer 2007 fixed values" = "styer",
-                     "Literature ranges (Part 10)" = "lit"),
-                   selected = "styer"),
+                   c("Literature-based distributions" = "lit",
+                     "Fixed point estimates (deterministic)" = "fixed"),
+                   selected = "lit"),
       hr(),
       actionButton("run", "Run simulation", class = "btn-primary btn-lg", width = "100%"),
       br(), br(),
@@ -221,11 +224,32 @@ ui <- fluidPage(
         tabPanel("Sensitivity", plotOutput("sens_plot", height = 400)),
         tabPanel("Assumption draws", plotOutput("draws_plot", height = 600)),
         tabPanel("Survival curves", plotOutput("surv_plot", height = 450)),
-        tabPanel("Validation",
-          p("Reconstruction of Styer et al. 2007 with their fixed constants. Published values come",
-            "from the Figure 5 inset and are never used as inputs, except that r is backed out of",
-            "the exponential stable case."),
-          tableOutput("validation"))
+        tabPanel("Model check",
+          p("As a check on the implementation, the deterministic model is run with the fixed",
+            "parameter values reported by Styer et al. (2007) and compared with their published",
+            "vectorial capacity estimates. Published values are never used as inputs, except that",
+            "r is solved from the exponential stable-age case."),
+          tableOutput("validation")),
+        tabPanel("About",
+          h4("What this tool does"),
+          p("This app propagates uncertainty in transmission and mosquito mortality parameters",
+            "through an age-specific vectorial capacity model. Each assumption can be fixed or",
+            "given a probability distribution; the simulation draws parameter sets at random and",
+            "reports the resulting distribution of vectorial capacity (Ct), along with a",
+            "sensitivity ranking of the inputs."),
+          h4("Model structure"),
+          p("Vectorial capacity follows the classical formulation of Macdonald (1957) and",
+            "Garrett-Jones (1964), extended to age-dependent mortality and extrinsic incubation",
+            "following Styer et al. (2007). Mortality can follow exponential, Gompertz, or",
+            "logistic hazards. Vector competence enters as a multiplicative term. Population age",
+            "structure can be a stable age distribution or synchronous emergence."),
+          h4("Sources"),
+          tags$ul(
+            tags$li("Macdonald G (1957) The Epidemiology and Control of Malaria. Oxford University Press."),
+            tags$li("Garrett-Jones C (1964) Prognosis for interruption of malaria transmission through assessment of the mosquito's vectorial capacity. Nature 204:1173-1175."),
+            tags$li("Styer LM, Carey JR, Wang J-L, Scott TW (2007) Mosquitoes do senesce: departure from the paradigm of constant mortality. Am J Trop Med Hyg 76:111-117.")),
+          p("Parameter ranges and distributions are from the literature as described in the",
+            "accompanying paper."))
       )
     )
   )
@@ -263,7 +287,7 @@ server <- function(input, output, session) {
     all <- c(vc_specs, mort_specs[[input$mort_model]])
     for (id in names(all)) {
       s <- all[[id]]
-      if (input$preset == "lit") s$dist <- lit_dists[[id]]
+      s$dist <- if (input$preset == "lit") lit_dists[[id]] else "Fixed"
       set_spec(id, s)
     }
   }, ignoreInit = TRUE)
