@@ -190,9 +190,10 @@ ui <- fluidPage(
       selectInput("n_iter", "Number of trials", c(500, 1000, 5000, 10000), 1000),
       numericInput("seed", "Random seed", 1),
       hr(),
-      strong("Load a preset"), br(), br(),
-      actionButton("preset_styer", "Styer 2007 fixed values", width = "100%"), br(), br(),
-      actionButton("preset_lit", "Literature ranges (Part 10)", width = "100%"),
+      radioButtons("preset", "Load a preset",
+                   c("Styer 2007 fixed values" = "styer",
+                     "Literature ranges (Part 10)" = "lit"),
+                   selected = "styer"),
       hr(),
       actionButton("run", "Run simulation", class = "btn-primary btn-lg", width = "100%"),
       br(), br(),
@@ -258,19 +259,14 @@ server <- function(input, output, session) {
     }
   }, ignoreInit = TRUE)
 
-  observeEvent(input$preset_styer, {
-    all <- c(vc_specs, mort_specs[[input$mort_model]])
-    for (id in names(all)) set_spec(id, all[[id]])
-  })
-
-  observeEvent(input$preset_lit, {
+  observeEvent(input$preset, {
     all <- c(vc_specs, mort_specs[[input$mort_model]])
     for (id in names(all)) {
       s <- all[[id]]
-      s$dist <- lit_dists[[id]]
+      if (input$preset == "lit") s$dist <- lit_dists[[id]]
       set_spec(id, s)
     }
-  })
+  }, ignoreInit = TRUE)
 
   results_val <- reactiveVal(NULL)
   run_count   <- reactiveVal(0)
