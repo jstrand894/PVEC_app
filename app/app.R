@@ -539,10 +539,15 @@ ui <- fluidPage(
       margin: 0 8.5px 0 1.5px; border-radius: 50%; border: 1.5px solid #6c757d; background: transparent;
       vertical-align: middle; position: relative; top: -1px;
       transition: background-color .3s, border-color .3s, box-shadow .3s; }
+    /* Three pulses, each a ring that expands and fades while the steady glow stays put, so after
+       the third pulse the dot simply stays lit with no jump. */
     #tabs > li > a.tab-new::before { background: #6f42c1; border-color: #6f42c1;
-      box-shadow: 0 0 6px 2px rgba(111,66,193,0.5); animation: dot-pulse 1.4s ease-out 2; }
-    @keyframes dot-pulse { 0% { box-shadow: 0 0 0 0 rgba(111,66,193,0.6); }
-      100% { box-shadow: 0 0 0 9px rgba(111,66,193,0); } }
+      box-shadow: 0 0 0 0 rgba(111,66,193,0), 0 0 6px 2px rgba(111,66,193,0.5);
+      animation: dot-pulse 1.2s ease-out 3; }
+    @keyframes dot-pulse {
+      0%   { box-shadow: 0 0 0 0 rgba(111,66,193,0.6), 0 0 6px 2px rgba(111,66,193,0.5); }
+      75%  { box-shadow: 0 0 0 10px rgba(111,66,193,0), 0 0 6px 2px rgba(111,66,193,0.5); }
+      100% { box-shadow: 0 0 0 10px rgba(111,66,193,0), 0 0 6px 2px rgba(111,66,193,0.5); } }
     .assump-desc { font-size: 11px; line-height: 1.3; color: #5a6268; margin: 2px 0 8px; }
     .tab-pane.active { animation: fade-in .25s ease-out; }
     @keyframes fade-in { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
@@ -650,7 +655,6 @@ ui <- fluidPage(
       transition: opacity .2s ease; pointer-events: none; }
     /* Going in: old text fades out, then the confirmation fades in. Coming back: the reverse. */
     .fade-btn .fb-icon { margin-right: 6px; }
-    #copy_link { min-width: 150px; }
     .fade-btn.copied .fb-a { opacity: 0; transition: opacity .2s ease; }
     .fade-btn.copied .fb-b { opacity: 1; transition: opacity .25s ease .2s; }
     .compare-table table { font-size: 13px; margin: 4px 0 4px; }
@@ -679,6 +683,7 @@ ui <- fluidPage(
     .cert-text { margin-top: 25px; }
     .app-meta { font-size: 12px; color: #5a6268; }
     .run-status { font-size: 12px; color: #555; margin-top: 6px; }
+    .start-over { font-size: 12px; margin-top: 10px; }
     #preset > label.control-label { display: block; margin-bottom: 4px; }
     #preset .shiny-options-group { margin-top: 0; }
     #preset .radio { margin: 0 0 4px; }
@@ -725,9 +730,9 @@ ui <- fluidPage(
       div(id = "stable_note", class = "assump-desc",
           "Growth rate and first-bite age apply only to the stable age distribution."),
       fluidRow(
-        column(7, selectInput("n_iter", "Trials",
+        column(6, selectInput("n_iter", "Trials",
                               c("500" = 500, "1,000" = 1000, "5,000" = 5000, "10,000 (slow)" = 10000), 1000)),
-        column(5, numericInput("seed", HTML(paste0("Seed ", as.character(actionLink("rand_seed", icon("shuffle"), title = "Pick a random seed")))), 1))),
+        column(6, numericInput("seed", HTML(paste0("Seed ", as.character(actionLink("rand_seed", icon("shuffle"), title = "Pick a random seed")))), 1))),
       radioButtons("preset", "Load a preset",
         choices = c("Literature-based distributions" = "lit",
                     "Fixed point estimates (deterministic)" = "fixed"),
@@ -746,11 +751,11 @@ ui <- fluidPage(
           "this as a deterministic baseline to see how much the uncertainty changes the result.",
           "You can still change any distribution by hand.")),
       div(class = "preset-reset", actionLink("reset_preset", "Reset all values to this preset")),
-      div(class = "preset-reset", actionLink("start_over", "Start over (defaults, clear run history)")),
       actionButton("run", "Run simulation", class = "btn-primary", width = "100%",
                    title = "Shortcut: Cmd or Ctrl + Enter"),
       uiOutput("stale_note"),
-      div(class = "run-status", textOutput("run_status"))
+      div(class = "run-status", textOutput("run_status")),
+      div(class = "start-over", actionLink("start_over", "Start over (defaults, clear run history)"))
     ),
     mainPanel(width = 9,
       tabsetPanel(id = "tabs",
@@ -873,7 +878,9 @@ ui <- fluidPage(
       )
     )
   ),
-  div(class = "app-footer", paste("Last updated:", LAST_UPDATED)),
+  # The copyright year follows the last-updated date, so deploy.R keeps both current
+  div(class = "app-footer",
+      HTML(paste0("&copy; ", sub(".*, ", "", LAST_UPDATED), " Jackson R. Strand &nbsp;&middot;&nbsp; Last updated: ", LAST_UPDATED))),
   # Shiny deletes and recreates its notification panel for each pop-up or progress bar,
   # so watch for it and move it under the settings box every time
   tags$script(HTML("
@@ -1004,7 +1011,7 @@ ui <- fluidPage(
         var url = w.location.href.split('#')[0] + '#' + settingsParams().toString();
         window.__lastLink = url;
         try { w.history.replaceState(null, '', url); } catch (e) {}
-        copyText(url).then(function(ok) { flash(btn, ok ? 'Copied!' : 'Link in address bar', ok); });
+        copyText(url).then(function(ok) { flash(btn, ok ? 'Copied!' : 'See address bar', ok); });
       });
       function sendHashSettings() {
         var h = topWin().location.hash.replace(/^#/, '');
