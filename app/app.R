@@ -869,7 +869,8 @@ assumption_ui <- function(id, s) {
           numericInput(paste0(id, "_fit_est"), "Mean (optional)", NA, width = "100%", step = steps[[id]]),
           actionButton(paste0(id, "_fit"), "Fit", class = "btn-sm btn-default"),
           uiOutput(paste0(id, "_fitmsg")))),
-      textInput(paste0(id, "_source"), "Source", "", width = "100%", placeholder = "e.g. Author (year), table 2")
+      div(title = "Optional note on where these values come from, such as a paper and table. It is kept with your results for reference and does not change the simulation.",
+        textInput(paste0(id, "_source"), "Source", "", width = "100%", placeholder = "e.g. Author (year), table 2"))
       ))))
 }
 

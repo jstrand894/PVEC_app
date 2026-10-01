@@ -236,13 +236,21 @@
           c.find('.assump-toggle').attr({'aria-expanded': 'false', 'aria-disabled': String(off), tabindex: off ? -1 : 0});
         });
       }
+      // Give every closed card the height of the tallest one; open cards keep their natural height
+      function equalizeCards() {
+        var cards = $('.assump-card').css('min-height', ''), max = 0;
+        cards.each(function() {
+          if (!$(this).hasClass('open') && this.offsetHeight > max) max = this.offsetHeight;
+        });
+        if (max) cards.css('min-height', max + 'px');
+      }
       function refreshAll() {
         refreshStructure();
         $('.assump-card').each(function() {
           var id = this.id.replace('card_', '');
           $('#' + id + '_summary').text($(this).hasClass('assump-uploaded') ? 'From uploaded draws' : cardSummary(id));
         });
-        refreshCounts(); refreshLinkStatus();
+        refreshCounts(); refreshLinkStatus(); equalizeCards();
       }
       var refreshTimer = null;
       function scheduleRefresh() { clearTimeout(refreshTimer); refreshTimer = setTimeout(refreshAll, 120); }
@@ -252,12 +260,19 @@
       });
       $(document).on('vc:linkstate', refreshLinkStatus);
       setTimeout(refreshAll, 600); setTimeout(refreshAll, 2000);
+      var eqTimer = null;
+      $(window).on('resize', function() { clearTimeout(eqTimer); eqTimer = setTimeout(equalizeCards, 150); });
+      $(document).on('shown.bs.tab', equalizeCards);
 
       // Open and close cards in place; several can stay open together
-      $(document).on('click', '.assump-toggle', function() {
-        var card = $(this).closest('.assump-card'), open = !card.hasClass('open');
+      // Clicking anywhere on the card header area toggles it; the open body and its controls do not
+      $(document).on('click', '.assump-card', function(e) {
+        var card = $(this);
         if (card.hasClass('card-off')) return;
-        card.toggleClass('open', open); $(this).attr('aria-expanded', String(open));
+        if (!$(e.target).closest('.assump-toggle').length &&
+            $(e.target).closest('.assump-body, .edited-tools, a, :input, label').length) return;
+        var open = !card.hasClass('open');
+        card.toggleClass('open', open).find('.assump-toggle').attr('aria-expanded', String(open));
       });
       $(document).on('click', '#expand_all', function() {
         $('.assump-card:not(.card-off)').addClass('open').find('.assump-toggle').attr('aria-expanded', 'true'); setLink(true);
