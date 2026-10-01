@@ -793,6 +793,18 @@ assumption_ui <- function(id, s) {
       ))))
 }
 
+# Small helpers for writing equations as HTML strings (no external math library needed)
+h       <- function(...) paste0(unlist(list(...)), collapse = "")
+v       <- function(x) paste0("<i>", x, "</i>")
+sup_    <- function(...) paste0("<sup>", h(...), "</sup>")
+sub_    <- function(...) paste0("<sub>", h(...), "</sub>")
+b_      <- function(...) paste0("<b>", h(...), "</b>")
+eq_frac <- function(num, den) paste0("<span class='fr'><span>", h(num), "</span><span>", h(den), "</span></span>")
+eq_sum  <- function(lo, hi) paste0("<span class='sm'><span>", h(hi), "</span>Σ<span>", h(lo), "</span></span>")
+eq      <- function(...) HTML(paste0("<div class='eq'>", h(...), "</div>"))
+P       <- function(..., class = NULL)
+  HTML(paste0("<p", if (!is.null(class)) paste0(" class='", class, "'"), ">", h(...), "</p>"))
+
 # A chip in the jump bar at the top of Define assumptions
 jump_chip <- function(target, text)
   tags$button(type = "button", class = "jump-chip", `data-target` = target, text, span(class = "jump-count"))
@@ -800,7 +812,11 @@ jump_chip <- function(target, text)
 
 # ---- UI ----
 ui <- fluidPage(
-  titlePanel("PVEC: Probabilistic Vectorial Capacity Simulator", windowTitle = "PVEC: Probabilistic Vectorial Capacity Simulator"),
+  titlePanel(div(class = "app-brand",
+                 tags$img(src = "pvec_logo.svg", alt = "PVEC", class = "app-logo"),
+                 span(class = "app-brand-text", "Probabilistic Vectorial Capacity Simulator")),
+             windowTitle = "PVEC: Probabilistic Vectorial Capacity Simulator"),
+  tags$head(tags$link(rel = "icon", type = "image/svg+xml", href = "pvec_icon.svg")),
   tags$button(id = "expand_sidebar", type = "button", class = "sidebar-arrow-open",
               title = "Show settings", `aria-label` = "Show settings", `aria-expanded` = "false",
               icon("chevron-right")),
@@ -808,6 +824,10 @@ ui <- fluidPage(
     @media (max-width: 767px) { html { overflow-y: scroll; } }
     .container-fluid { padding-top: 14px; }
     .container-fluid > h2 { margin: 8px 0 28px; }
+    .app-brand { display: flex; align-items: center; gap: 14px; }
+    .app-logo { height: 38px; width: auto; display: block; }
+    .app-brand-text { font-size: 22px; font-weight: 400; color: #444; line-height: 1.2; }
+    @media (max-width: 500px) { .app-brand-text { font-size: 16px; } .app-logo { height: 30px; } }
     body { padding-bottom: 36px; }
     .app-footer { position: fixed; left: 0; bottom: 0; z-index: 1000; padding: 4px 14px;
       font-size: 12px; color: #5a6268; background: rgba(255,255,255,0.9);
@@ -947,6 +967,14 @@ ui <- fluidPage(
     .jump-chip { border: 1px solid #c8ced3; background: #fff; color: #333; border-radius: 14px; padding: 2px 11px;
       font-size: 12.5px; cursor: pointer; transition: background-color .15s, color .15s, border-color .15s; }
     .jump-chip:hover { background: #f0f4f8; }
+    .jump-chip { position: relative; }
+    .jump-chip[data-tip]::after { content: attr(data-tip); position: absolute; left: 0; top: calc(100% + 8px); z-index: 40;
+      width: 250px; padding: 6px 10px; border-radius: 4px; text-align: left; white-space: normal;
+      font-size: 12px; line-height: 1.35; color: #fff; background: rgba(33, 37, 41, 0.94); pointer-events: none;
+      opacity: 0; visibility: hidden; transition: opacity .15s ease .3s, visibility 0s linear .45s; }
+    .jump-chip[data-tip]:hover::after, .jump-chip[data-tip]:focus-visible::after { opacity: 1; visibility: visible;
+      transition: opacity .15s ease .3s, visibility 0s linear .3s; }
+    @media (prefers-reduced-motion: reduce) { .jump-chip[data-tip]::after { transition: none; } }
     .jump-chip.active { background: #337ab7; border-color: #2e6da4; color: #fff; }
     .jump-count { margin-left: 6px; font-size: 11px; opacity: 0.85; }
     .jump-count:empty { display: none; }
@@ -975,6 +1003,10 @@ ui <- fluidPage(
     .assump-card.open .assump-body-pad { opacity: 1; transition: opacity .25s ease .1s; }
     .adv-clip > .link-box { margin-top: 8px; opacity: 0; transition: opacity .15s ease; }
     .adv-open .adv-clip > .link-box { opacity: 1; transition: opacity .25s ease .1s; }
+    .fold { margin: 6px 0 14px; }
+    .fold .adv-toggle strong { font-size: 18px; font-weight: 500; }
+    .adv-clip > .eq-pad { margin-top: 8px; opacity: 0; transition: opacity .15s ease; }
+    .adv-open .adv-clip > .eq-pad { opacity: 1; transition: opacity .25s ease .1s; }
     .adv-toggle { display: flex; gap: 6px; align-items: center; border: 0; background: none; padding: 4px 0;
       cursor: pointer; font-size: 16px; text-align: left; }
     .adv-tag { font-size: 11px; color: #5a6268; border: 1px solid #ccd3da; border-radius: 9px; padding: 0 7px; }
@@ -1035,7 +1067,7 @@ ui <- fluidPage(
       .tab-content { overflow: visible !important; height: auto !important; padding: 0 !important; }
       .well { break-inside: avoid; }
       .assump-body, .adv-body { grid-template-rows: 1fr !important; visibility: visible !important; }
-      .assump-body-pad, .adv-clip > .link-box { opacity: 1 !important; }
+      .assump-body-pad, .adv-clip > .link-box, .adv-clip > .eq-pad { opacity: 1 !important; }
       img { max-width: 100% !important; }
       .print-only { display: block; font-size: 12px; color: #444; margin: 0 0 10px; }
     }
@@ -1044,6 +1076,14 @@ ui <- fluidPage(
     .forecast-summary { font-size: 15px; margin: 6px 0 4px; }
     .forecast-note { font-size: 12px; color: #5a6268; margin: 0 0 8px; }
     .cert-text { margin-top: 25px; }
+    .eq { font-family: 'Times New Roman', Times, serif; font-size: 17px; background: #f7f9fb; border-left: 3px solid #7030A0;
+      padding: 8px 14px; margin: 8px 0 12px; overflow-x: auto; white-space: nowrap; }
+    .eq .fr { display: inline-block; vertical-align: middle; text-align: center; margin: 0 3px; }
+    .eq .fr > span { display: block; padding: 0 4px; line-height: 1.25; }
+    .eq .fr > span + span { border-top: 1px solid #333; }
+    .eq .sm { display: inline-block; vertical-align: middle; text-align: center; margin: 0 3px; line-height: 1.05; }
+    .eq .sm > span { display: block; font-size: 11px; }
+    .eq-note { font-size: 13px; color: #555; margin: -4px 0 12px; }
     .app-meta { font-size: 12px; color: #5a6268; }
     .run-status { font-size: 12px; color: #555; margin-top: 6px; }
     .start-over { font-size: 12px; margin-top: 10px; }
@@ -1268,6 +1308,48 @@ ui <- fluidPage(
             "following Styer et al. (2007). Mortality can follow exponential, Gompertz, or",
             "logistic hazards. Vector competence enters as a multiplicative term. Population age",
             "structure can be a stable age distribution or synchronous emergence."),
+          div(class = "fold", id = "eq_fold",
+            tags$button(id = "eq_toggle", type = "button", class = "adv-toggle", `aria-expanded` = "false",
+                        `aria-controls` = "eq_body",
+                        span(class = "chev", icon("chevron-right")), strong("Equations"),
+                        span(class = "adv-tag", "how Ct is calculated")),
+            div(class = "adv-body", id = "eq_body", div(class = "adv-clip", div(class = "eq-pad",
+          P("Notation: ", v("x"), " is mosquito age in days; ", v("m"), " is mosquito density per person; ", v("a"),
+            " is the biting rate (bites on humans per mosquito per day); ", v("c"), " is vector competence; ", v("n"),
+            " is the extrinsic incubation period in days; ", v("r"), " is the population growth rate; and ", v("σ"),
+            " is the age at first bite."),
+          P(b_("1. Classical vectorial capacity"), " (Macdonald 1957; Garrett-Jones 1964), with constant daily survival ", v("p"), ":"),
+          eq(v("C"), " = ", v("m"), " ", v("a"), sup_("2"), " ", v("c"), " ", eq_frac(h(v("p"), sup_(v("n"))), h("−ln ", v("p")))),
+          P(b_("2. Age-specific mortality"), " (Styer et al. 2007). The daily hazard ", v("μ"), "(", v("x"), ") takes one of three forms. ",
+            v("a"), " is the initial hazard, ", v("b"), " the rate of ageing and ", v("s"), " the deceleration of the logistic model:"),
+          eq("Exponential: ", v("μ"), "(", v("x"), ") = ", v("a"), "<br>",
+             "Gompertz: ", v("μ"), "(", v("x"), ") = ", v("a"), " ", v("e"), sup_(h(v("b"), v("x"))), "<br>",
+             "Logistic: ", v("μ"), "(", v("x"), ") = ", eq_frac(h(v("a"), " ", v("e"), sup_(h(v("b"), v("x")))),
+               h("1 + (", v("a"), v("s"), "/", v("b"), ")(", v("e"), sup_(h(v("b"), v("x"))), " − 1)"))),
+          P(b_("3. Survivorship and remaining life expectancy"), ", from the hazard (the fraction of mosquitoes alive at age ", v("x"),
+            ", and the expected days of life left for a mosquito that has reached it):"),
+          eq(v("l"), "(", v("x"), ") = exp(−", eq_sum("k = 0", h(v("x"), " − 1")), " ", v("μ"), "(", v("k"), "))", "<br>",
+             v("e"), "(", v("x"), ") = ", eq_sum("k ≥ x", "∞"), " ", eq_frac(h(v("l"), "(", v("k"), ")"), h(v("l"), "(", v("x"), ")")), " − ½"),
+          P(b_("4. Age-specific vectorial capacity."), " A mosquito of age ", v("x"), " must survive the ", v("n"),
+            "-day incubation period and then lives, on average, ", v("e"), "(", v("x"), " + ", v("n"), ") more days to bite:"),
+          eq(v("C"), "(", v("x"), ") = ", v("m"), " ", v("a"), sup_("2"), " ", v("c"), " ", eq_frac(h(v("l"), "(", v("x"), " + ", v("n"), ")"), h(v("l"), "(", v("x"), ")")),
+             " ", v("e"), "(", v("x"), " + ", v("n"), ")"),
+          P(class = "eq-note", "With constant mortality the survival term becomes ", v("p"), sup_(v("n")), " and ", v("e"),
+            " approaches 1/(−ln ", v("p"), "), so this reduces to equation 1. The tests check this."),
+          P(b_("5. Total vectorial capacity"), ", Ct, depends on the population age structure."),
+          eq("Synchronous emergence: ", v("C"), sub_("t"), " = ", eq_frac("1", "4"), " ", eq_sum("x = 3", "6"), " ", v("C"), "(", v("x"), ")", "<br>",
+             "Stable age distribution: ", v("w"), "(", v("x"), ") = ", eq_frac(h(v("l"), "(", v("x"), ") ", v("e"), sup_(h("−", v("r"), v("x")))),
+               h(eq_sum("k = 0", "199"), " ", v("l"), "(", v("k"), ") ", v("e"), sup_(h("−", v("r"), v("k"))))), "<br>",
+             h(v("C"), sub_("t"), " = ", eq_sum(h(v("x"), " ≥ ", v("σ")), "199"), " ", v("w"), "(", v("x"), ") ", v("C"), "(", v("x"), ")")),
+          P(class = "eq-note", "Synchronous emergence averages ", v("C"), "(", v("x"), ") over ages 3 to 6 days. Under the stable age distribution, ",
+            v("w"), "(", v("x"), ") is the share of the population at age ", v("x"), " (ages 0 to 199 days) and only mosquitoes old enough to have taken a first bite, ",
+            v("x"), " ≥ ", v("σ"), " (rounded to a whole day), contribute."),
+          P(b_("6. Probabilistic version."), " Each of ", v("N"), " trials draws a parameter set ", v("θ"), sub_("i"), " = (", v("a"), ", ", v("m"), ", ", v("c"), ", ", v("n"),
+            ", mortality parameters, ", v("r"), ", ", v("σ"), ") from the distributions chosen on the Define assumptions tab, with optional rank correlations, and computes"),
+          eq(v("C"), sub_(h("t", ",", v("i"))), " = ", v("f"), "(", v("θ"), sub_("i"), "),   ", v("i"), " = 1, …, ", v("N")),
+          P(class = "eq-note", "The forecast is the distribution of ", v("C"), sub_("t,i"), ". The incubation period ", v("n"),
+            " is rounded to a whole day between 1 and 150. Setting every assumption to Fixed gives the deterministic model that the Model check tab compares with Styer et al. (2007). ",
+            "Sensitivity is the partial rank correlation of each input with ", v("C"), sub_("t"), "."))))),
           h4("Methods notes"),
           tags$ul(
             tags$li("Each trial draws one value for every assumption, runs the age-specific model, and records Ct."),
@@ -1516,16 +1598,20 @@ ui <- fluidPage(
         if (d === 'Normal' || d === 'Lognormal') return d + ', mean ' + f('mean') + ', SD ' + f('sd') + ', limits ' + f('min') + ' to ' + f('max');
         return '';
       }
+      function setTip(chip, text) { chip.attr('data-tip', text).attr('aria-label', $.trim(chip.clone().children().remove().end().text()) + ': ' + text); }
       function refreshCounts() {
         Object.keys(cardSections).forEach(function(sec) {
           var chip = $('.jump-chip[data-target=\"' + sec + '\"]'), shown = $('#' + sec).is(':visible');
           chip.toggle(shown);
           if (!shown) return;
-          if ($('#' + sec + ' .card-off').length) { chip.find('.jump-count').text('').removeAttr('title'); return; }
+          if ($('#' + sec + ' .card-off').length) { chip.find('.jump-count').text(''); setTip(chip, 'Not used with synchronous emergence.'); return; }
           var vis = cardSections[sec].filter(function(id) { return $('#card_' + id).is(':visible'); });
           var varying = vis.filter(function(id) { return $('#' + id + '_dist').val() !== 'Fixed' || $('#card_' + id).hasClass('assump-uploaded'); });
-          chip.find('.jump-count').text(varying.length + '/' + vis.length)
-              .attr('title', varying.length + ' of ' + vis.length + ' assumptions are not fixed');
+          var n = varying.length, m = vis.length;
+          chip.find('.jump-count').text(n + '/' + m);
+          setTip(chip, n === m ? 'All ' + m + ' assumptions here are drawn from a distribution, so each adds uncertainty to the forecast.'
+                 : n === 0 ? 'None of these ' + m + ' assumptions are varying. Each is fixed at one value, so they add no uncertainty. Open a card and pick a distribution to vary one.'
+                 : n + ' of ' + m + ' assumptions here are drawn from a distribution. The other ' + (m - n) + (m - n === 1 ? ' is' : ' are') + ' fixed at one value.');
         });
       }
       function refreshLinkStatus() {
@@ -1533,7 +1619,9 @@ ui <- fluidPage(
         if (n) parts.push(n + (n === 1 ? ' correlation' : ' correlations'));
         if (u) parts.push('uploaded draws for ' + u + (u === 1 ? ' assumption' : ' assumptions'));
         $('#link_status').text(parts.length ? parts.join(', ') : 'none set');
-        $('.jump-chip[data-target=\"sec_linking\"] .jump-count').text(parts.length ? 'on' : '');
+        var lc = $('.jump-chip[data-target=\"sec_linking\"]');
+        lc.find('.jump-count').text(parts.length ? 'on' : '');
+        setTip(lc, parts.length ? 'Linking is on: ' + parts.join(', ') + '.' : 'Nothing is linked, so every assumption is drawn independently. Open this section to set correlations or upload joint draws.');
       }
       // With synchronous emergence the population cards are not used, so grey them out and explain on hover
       function refreshStructure() {
@@ -1579,6 +1667,10 @@ ui <- fluidPage(
       function setLink(open) {
         $('#sec_linking').toggleClass('adv-open', open); $('#link_toggle').attr('aria-expanded', String(open));
       }
+      $(document).on('click', '#eq_toggle', function() {
+        var open = !$('#eq_fold').hasClass('adv-open');
+        $('#eq_fold').toggleClass('adv-open', open); $(this).attr('aria-expanded', String(open));
+      });
       $(document).on('click', '#link_toggle', function() { setLink(!$('#sec_linking').hasClass('adv-open')); });
 
       // Jump bar: scroll to a section (animated, instant if reduced motion is on) and highlight the current one

@@ -8,14 +8,8 @@ src <- sub('^LAST_UPDATED <- ".*"', sprintf('LAST_UPDATED <- "%s"', today), src)
 writeLines(src, "app/app.R")
 
 # 2. Export with a proper page title, browser-tab icon and loading message
-favicon <- paste0(
-  "data:image/svg+xml,",
-  utils::URLencode(paste0(
-    "<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'>",
-    "<rect width='32' height='32' rx='6' fill='#337ab7'/>",
-    "<rect x='5' y='18' width='4' height='9' fill='#fff'/><rect x='10' y='11' width='4' height='16' fill='#fff'/>",
-    "<rect x='15' y='6' width='4' height='21' fill='#fff'/><rect x='20' y='13' width='4' height='14' fill='#fff'/>",
-    "<rect x='25' y='20' width='3' height='7' fill='#fff'/></svg>"), reserved = TRUE))
+favicon <- paste0("data:image/svg+xml,",
+                  utils::URLencode(paste(readLines("app/www/pvec_icon.svg", warn = FALSE), collapse = ""), reserved = TRUE))
 
 # The loading message sits behind the app, so it shows while R starts up and is covered
 # by the app once it has drawn.

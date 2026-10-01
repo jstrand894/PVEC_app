@@ -1,3 +1,5 @@
+<img src="app/www/pvec_logo.svg" alt="PVEC" height="56">
+
 # PVEC: Probabilistic Vectorial Capacity Simulator
 
 PVEC (Probabilistic VECtorial capacity) is an interactive tool that propagates uncertainty in transmission and mosquito mortality
@@ -40,6 +42,8 @@ enter leaves your computer. The first load can take 10 to 30 seconds while R sta
   interval, and mean if given, into the parameters of a uniform, normal, lognormal or beta distribution.
 - Produce the paper comparison on the Model check tab: Styer et al. published values, the deterministic model, and
   a probabilistic run with every assumption within plus or minus 20% of the same values, as a table and CSV.
+- Read the full model equations (classical formula, age-specific mortality, survivorship, age-specific and
+  total vectorial capacity, and the probabilistic version) on the About tab.
 - Read sensitivity as partial rank correlation coefficients (PRCC) with 95% intervals.
 - Hide the settings panel to give plots the full width. Printing a tab prints just its
   content.
@@ -86,18 +90,19 @@ Rscript tests/test_core.R
 Checks the age-specific model against the classical closed form and the Styer et al. values,
 that the same seed reproduces a run, that requested correlations are achieved without
 changing any assumption's own distribution, that uploaded draws are used as whole rows, and
-that PRCC matches the textbook formula, and that fitting a reported interval returns the same interval. The GitHub workflow runs them before rebuilding the site.
+that PRCC matches the textbook formula, that fitting a reported interval returns the same interval, and that the equations written on the About tab,
+implemented literally, reproduce the model. The GitHub workflow runs them before rebuilding the site.
 
 ## Repository layout
 
 | Path | What it is |
 |---|---|
 | `app/app.R` | The whole app: model, interface and server |
-| `app/www/` | Images used by the app |
+| `app/www/` | Images used by the app: the PVEC logo (outlined, so it does not need the Futura font), the browser-tab icon and the About photo |
 | `docs/` | The exported site that GitHub Pages serves (generated, do not edit) |
 | `deploy.R` | Rebuilds `docs/` |
 | `tests/test_core.R` | Model and sampling checks |
-| `pics/` | Original photo used on the About tab |
+| `pics/` | Original photo and the original editable logo (`PVEC_logo.svg`, uses the Futura font) |
 | `CITATION.cff` | Citation metadata for this software |
 
 ## Settings file format

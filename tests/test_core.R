@@ -64,6 +64,28 @@ fl <- fit_range("Lognormal", 2, 8, NA, sb)$fields; sl <- sqrt(log(1 + fl$sd^2 / 
 check(all(abs(qlnorm(c(0.025, 0.975), ml, sl) - c(2, 8)) < 1e-6), "Lognormal fit reproduces the interval")
 check(!fit_range("Beta", 0.2, 1.4, NA, sb)$ok && !fit_range("Normal", 5, 3, NA, sb)$ok && !fit_range("PERT", 1, 2, NA, sb)$ok, "fit refuses impossible or unsupported input")
 
+# --- The equations written on the About tab, implemented literally, agree with the model ------------
+lit_ct <- function(model, structure, a, m, cc, n, ma, mb, ms, r, sigma) {
+  x <- 0:399
+  mu <- switch(model, exponential = rep(ma, 400), gompertz = ma * exp(mb * x),
+               logistic = ma * exp(mb * x) / (1 + (ma * ms / mb) * (exp(mb * x) - 1)))
+  l <- function(k) exp(-vapply(k, function(kk) sum(mu[seq_len(kk)]), 0))           # sum of mu(0..k-1)
+  e <- function(k) vapply(k, function(kk) sum(l(kk:400)) / l(kk), 0) - 0.5          # sum over ages k and older
+  C <- sapply(0:199, function(xx) m * a^2 * cc * l(xx + n) / l(xx) * e(xx + n))
+  C[!is.finite(C)] <- 0                                                              # no mosquitoes survive that far
+  if (structure == "synchronous") return(mean(C[4:7]))
+  w <- l(0:199) * exp(-r * (0:199)); w <- w / sum(w)
+  sum(w[(sigma + 1):200] * C[(sigma + 1):200])
+}
+for (mod in c("exponential", "gompertz", "logistic")) for (st in c("synchronous", "stable")) {
+  sp <- mk_specs(mod, st, "fixed"); g <- function(id) sp[[id]]$value
+  app <- run_model(mod, st, sp, 2, 1)$ct[1]
+  by_hand <- lit_ct(mod, st, g("a_bite"), g("m_dens"), g("vec_comp"), g("n_eip"), g("mort_a"),
+                    if (mod != "exponential") g("mort_b") else 0, if (mod == "logistic") g("mort_s") else 0,
+                    if (st == "stable") g("growth_r") else 0, if (st == "stable") g("first_bite") else 0)
+  check(abs(app / by_hand - 1) < 1e-6, sprintf("About-tab equations reproduce the model (%s, %s)", mod, st))
+}
+
 # --- Paper comparison -------------------------------------------------------------------------------
 pc1 <- paper_comparison(n = 3000, seed = 7); pc2 <- paper_comparison(n = 3000, seed = 7)
 check(nrow(pc1) == 6 && identical(pc1, pc2), "paper comparison has six rows and reproduces with the same seed")
