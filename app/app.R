@@ -183,6 +183,7 @@ assumption_ui <- function(id, s) {
 ui <- fluidPage(
   titlePanel("Probabilistic vectorial capacity simulator"),
   tags$head(tags$style(HTML("
+    .hint { border-bottom: 1px dotted #6c757d; cursor: help; }
     .author-card { display: flex; align-items: center; gap: 24px; max-width: 640px;
       padding: 20px 24px; background: #f8f9fa; border: 1px solid #e3e6ea;
       border-radius: 12px; box-shadow: 0 2px 6px rgba(0,0,0,0.06); }
@@ -207,9 +208,22 @@ ui <- fluidPage(
       numericInput("seed", "Random seed", 1),
       hr(),
       radioButtons("preset", "Load a preset",
-                   c("Literature-based distributions" = "lit",
-                     "Fixed point estimates (deterministic)" = "fixed"),
-                   selected = "lit"),
+        choiceNames = list(
+          span(class = "hint", title = paste(
+            "Each assumption is drawn from a probability distribution whose range comes from",
+            "published estimates (see About). Biting rate and vector competence use Beta,",
+            "incubation period and mosquito density use Uniform, and the mortality",
+            "parameters use truncated Normal. Results vary from trial to trial, so the",
+            "forecast shows a distribution of Ct."),
+            "Literature-based distributions"),
+          span(class = "hint", title = paste(
+            "Every assumption is set to a single value, so every trial gives the same Ct.",
+            "Use this as a deterministic baseline to see how much the uncertainty changes",
+            "the result.", "You can still change any distribution by hand.",
+            sep = " "),
+            "Fixed point estimates (deterministic)")),
+        choiceValues = c("lit", "fixed"),
+        selected = "lit"),
       hr(),
       actionButton("run", "Run simulation", class = "btn-primary btn-lg", width = "100%"),
       br(), br(),
@@ -271,11 +285,10 @@ ui <- fluidPage(
             img(src = "headshot.jpg", alt = "Jackson Strand", class = "author-photo"),
             div(class = "author-text",
               div(class = "author-label", "About the author"),
-              h4("Jackson Strand"),
-              p("PhD candidate, Montana State University"),
+              h4("Jackson R. Strand"),
+              p("PhD student, Montana State University"),
               p(class = "author-note",
-                "Developed this tool to make probabilistic vectorial capacity forecasts",
-                "accessible alongside the accompanying paper."))))
+                "Developed this tool to make probabilistic vectorial capacity forecasts."))))
       )
     )
   )
