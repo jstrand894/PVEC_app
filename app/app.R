@@ -2,7 +2,7 @@ library(shiny)
 
 # Shown in the page footer; update when you publish a new version
 LAST_UPDATED <- "October 1, 2026"
-APP_VERSION  <- "1.0"
+APP_VERSION  <- "1.1"
 
 # ---- Fixed settings ----
 MAX_AGE <- 400
@@ -149,9 +149,16 @@ mort_specs <- list(
     mort_b = sp("Fixed", 0,      0,    0,      1,    0,      0.1),
     mort_s = sp("Fixed", 0,      0,    0,      5,    0,      0.1)))
 
+# Population age structure. Used only with the stable age distribution. No published range is built in,
+# so both start fixed; the min/max/shape values are just starting points if you choose a distribution.
+pop_specs <- list(
+  growth_r   = sp("Fixed", round(r_hat, 4), 0.05, round(r_hat, 4), 0.25, round(r_hat, 4), 0.03),
+  first_bite = sp("Fixed", 3, 1, 3, 5, 3, 1))
+
 # Default distribution for each assumption (literature-based)
 lit_dists <- c(a_bite = "Beta", n_eip = "Uniform", m_dens = "Uniform", vec_comp = "Beta",
-               mort_a = "Normal", mort_b = "Normal", mort_s = "Normal")
+               mort_a = "Normal", mort_b = "Normal", mort_s = "Normal",
+               growth_r = "Fixed", first_bite = "Fixed")
 
 labels <- c(a_bite   = "Biting rate (bites per day)",
             n_eip    = "Extrinsic incubation period (days)",
@@ -159,9 +166,12 @@ labels <- c(a_bite   = "Biting rate (bites per day)",
             vec_comp = "Vector competence",
             mort_a   = "Mortality a (initial hazard)",
             mort_b   = "Mortality b (rate of aging)",
-            mort_s   = "Mortality s (deceleration)")
+            mort_s   = "Mortality s (deceleration)",
+            growth_r = "Population growth rate r",
+            first_bite = "Age at first bite (days)")
 
 fields       <- c("value", "min", "mode", "max", "mean", "sd", "shape1", "shape2")
+all_setting_ids <- c(names(vc_specs), names(mort_specs$logistic), names(pop_specs))
 dist_choices <- c("Fixed", "Uniform", "Triangular", "PERT", "Beta", "Normal", "Lognormal")
 
 descs <- c(a_bite   = "Bites on humans per mosquito per day.",
@@ -170,7 +180,14 @@ descs <- c(a_bite   = "Bites on humans per mosquito per day.",
            vec_comp = "Chance a mosquito becomes infectious after an infectious blood meal.",
            mort_a   = "Daily mortality rate at emergence (per day).",
            mort_b   = "How quickly mortality rises with age (per day).",
-           mort_s   = "Slows the rise in mortality at old ages (logistic model only).")
+           mort_s   = "Slows the rise in mortality at old ages (logistic model only).",
+           growth_r = "Daily growth of the mosquito population; sets how the stable age distribution is weighted.",
+           first_bite = "Age in days at which a mosquito first bites a human.")
+
+# Extra provenance notes shown on a card
+card_notes <- c(
+  growth_r   = "The default is solved so the exponential stable-age case matches the Ct published by Styer et al. (see Model check). It is not an independent field estimate. No range is built in, so it starts fixed.",
+  first_bite = "No published range is built in, so it starts fixed.")
 
 # One-line description of a distribution spec, used in downloads
 describe_spec <- function(s) {
@@ -231,31 +248,196 @@ draw_forecast <- function(ct, b, prev = NULL, run_labels = NULL, thresh = NA) {
   if (has_thresh(thresh)) draw_threshold(ct, thresh)
 }
 
+# ---- Sampling and the simulation loop (shared by the app and the tests) ----
+
+# Values for uniform draws u (between 0 and 1) from an assumption's distribution (inverse CDF).
+# Used when draws must be linked to each other (correlations).
+qdraw <- function(u, s) {
+  switch(s$dist,
+    Fixed      = rep(s$value, length(u)),
+    Uniform    = s$min + u * (s$max - s$min),
+    Triangular = { fc <- (s$mode - s$min) / (s$max - s$min)
+                   ifelse(u < fc, s$min + sqrt(u * (s$max - s$min) * (s$mode - s$min)),
+                          s$max - sqrt((1 - u) * (s$max - s$min) * (s$max - s$mode))) },
+    PERT       = { a1 <- 1 + 4 * (s$mode - s$min) / (s$max - s$min)
+                   a2 <- 1 + 4 * (s$max - s$mode) / (s$max - s$min)
+                   s$min + (s$max - s$min) * qbeta(u, a1, a2) },
+    Beta       = s$min + (s$max - s$min) * qbeta(u, s$shape1, s$shape2),
+    Normal     = qnorm(pnorm(s$min, s$mean, s$sd) + u * (pnorm(s$max, s$mean, s$sd) - pnorm(s$min, s$mean, s$sd)),
+                       s$mean, s$sd),
+    Lognormal  = { sdlog <- sqrt(log(1 + s$sd^2 / s$mean^2)); meanlog <- log(s$mean) - sdlog^2 / 2
+                   qlnorm(plnorm(s$min, meanlog, sdlog) + u * (plnorm(s$max, meanlog, sdlog) - plnorm(s$min, meanlog, sdlog)),
+                          meanlog, sdlog) })
+}
+
+# Uniform draws with the requested rank (Spearman) correlations, using a Gaussian copula.
+# `pairs` has columns a, b, rho. If the requested correlations cannot all hold at once (the matrix is
+# not positive definite) they are shrunk together by the smallest amount that makes them consistent.
+correlated_uniforms <- function(n, ids, pairs) {
+  k <- length(ids); R <- diag(k); dimnames(R) <- list(ids, ids)
+  for (i in seq_len(nrow(pairs))) {
+    r <- 2 * sin(pi * pairs$rho[i] / 6)            # Spearman to the correlation of the underlying normals
+    R[pairs$a[i], pairs$b[i]] <- r; R[pairs$b[i], pairs$a[i]] <- r
+  }
+  shrink <- 0
+  if (min(eigen(R, symmetric = TRUE, only.values = TRUE)$values) < 1e-8) {
+    lo <- 0; hi <- 1
+    for (it in 1:40) { mid <- (lo + hi) / 2
+      if (min(eigen((1 - mid) * R + mid * diag(k), symmetric = TRUE, only.values = TRUE)$values) < 1e-8) lo <- mid else hi <- mid }
+    shrink <- hi; R <- (1 - shrink) * R + shrink * diag(k)
+  }
+  z <- matrix(rnorm(n * k), n, k) %*% chol(R)
+  u <- pnorm(z); colnames(u) <- ids
+  list(u = u, shrink = shrink)
+}
+
+# All draws for one run. Independent assumptions use their own distribution; assumptions in `pairs`
+# are drawn together with the requested correlations; assumptions found in `uploaded` ($df) take
+# whole rows from the uploaded table, which keeps their joint structure.
+generate_draws <- function(specs, n, pairs = NULL, uploaded = NULL) {
+  ids   <- names(specs); notes <- character(0)
+  up_ids <- if (!is.null(uploaded)) intersect(ids, names(uploaded$df)) else character(0)
+  varying <- ids[vapply(specs, function(s) s$dist != "Fixed", logical(1))]
+  use <- NULL
+  if (!is.null(pairs) && nrow(pairs)) {
+    ok  <- pairs$a %in% varying & pairs$b %in% varying & !(pairs$a %in% up_ids) & !(pairs$b %in% up_ids)
+    if (any(!ok)) notes <- c(notes, sprintf("Correlation skipped (an assumption is fixed, uploaded or not in use): %s and %s",
+                                            labels[pairs$a[!ok]], labels[pairs$b[!ok]]))
+    use <- pairs[ok, , drop = FALSE]
+  }
+  corr_ids <- if (!is.null(use) && nrow(use)) intersect(ids, unique(c(use$a, use$b))) else character(0)
+  indep    <- setdiff(ids, c(up_ids, corr_ids))
+  cols <- lapply(specs[indep], function(s) draw(n, s))
+  shrink <- 0
+  if (length(corr_ids)) {
+    cu <- correlated_uniforms(n, corr_ids, use); shrink <- cu$shrink
+    for (id in corr_ids) cols[[id]] <- qdraw(cu$u[, id], specs[[id]])
+    if (shrink > 0) notes <- c(notes, sprintf("The requested correlations were not all possible together, so they were reduced by %.0f%% to be consistent.", 100 * shrink))
+  }
+  if (length(up_ids)) {
+    m   <- nrow(uploaded$df)
+    idx <- if (m >= n) sample.int(m, n) else sample.int(m, n, replace = TRUE)
+    for (id in up_ids) cols[[id]] <- uploaded$df[[id]][idx]
+    notes <- c(notes, sprintf("%s taken from the uploaded draws (%s rows, %s).",
+                              paste(labels[up_ids], collapse = ", "), format(m, big.mark = ","),
+                              if (m >= n) "sampled without replacement" else "sampled with replacement"))
+  }
+  d <- as.data.frame(cols[ids], check.names = FALSE)
+  achieved <- NULL
+  if (!is.null(use) && nrow(use))
+    achieved <- cbind(use, achieved = vapply(seq_len(nrow(use)), function(i) cor(d[[use$a[i]]], d[[use$b[i]]], method = "spearman"), 0))
+  list(draws = d, notes = notes, achieved = achieved)
+}
+
+# One simulation: draw the parameter sets, then run the age-specific model for each trial.
+# `specs` is a named list of assumption specs for the assumptions in use (including growth_r and
+# first_bite when the age structure is stable). Same code path for the app and the tests.
+run_model <- function(model, structure, specs, n, seed, pairs = NULL, uploaded = NULL,
+                      progress = function(done, n) {}) {
+  set.seed(seed)
+  g <- generate_draws(specs, n, pairs, uploaded)
+  d <- g$draws
+  d$n_eip <- pmin(pmax(round(d$n_eip), 1), 150)
+  ids <- names(specs)
+  b_i <- if ("mort_b" %in% ids) d$mort_b else rep(0, n)
+  s_i <- if ("mort_s" %in% ids) d$mort_s else rep(0, n)
+  stable <- identical(structure, "stable")
+  if (stable) {
+    r_i   <- d$growth_r
+    sig_i <- pmin(pmax(round(d$first_bite), 0), N_CLASS - 1)
+  }
+  ct <- numeric(n)
+  for (i in seq_len(n)) {
+    lt <- life_table(hazard(model, AGES, d$mort_a[i], b_i[i], s_i[i]))
+    Cx <- age_specific_vc(lt, d$n_eip[i], d$m_dens[i] * d$a_bite[i]^2, d$vec_comp[i])
+    ct[i] <- if (stable) ct_stable(lt, Cx, r_i[i], sig_i[i]) else ct_synchronous(Cx)
+    if (i %% 100 == 0) progress(i, n)
+  }
+  list(ct = ct, draws = d, b = b_i, s = s_i, notes = g$notes, achieved = g$achieved)
+}
+
+# Partial rank correlation coefficients (PRCC): the rank correlation between each input and the output
+# after removing the linear effects of all the other inputs (on ranks). 95% intervals use Fisher's z.
+prcc_calc <- function(X, y) {
+  R <- as.data.frame(lapply(X, rank)); ry <- rank(y); k <- ncol(R); n <- nrow(R)
+  est <- vapply(seq_len(k), function(j) {
+    others <- as.matrix(R[, -j, drop = FALSE])
+    if (k == 1) return(cor(R[[j]], ry))
+    ex <- lm.fit(cbind(1, others), R[[j]])$residuals
+    ey <- lm.fit(cbind(1, others), ry)$residuals
+    suppressWarnings(cor(ex, ey))
+  }, 0)
+  names(est) <- names(X)
+  z  <- atanh(pmin(pmax(est, -0.9999), 0.9999)); se <- 1 / sqrt(max(n - 3 - (k - 1), 1))
+  data.frame(id = names(X), est = est, lo = tanh(z - 1.96 * se), hi = tanh(z + 1.96 * se), row.names = NULL)
+}
+
 # ---- Plots and summaries shared by the screen and the downloadable report ----
 sens_contrib <- function(res) {
   d      <- res$draws
   varied <- names(d)[sapply(d, function(v) sd(v) > 0)]
   if (length(varied) == 0 || sd(res$ct) == 0) return(NULL)
   rho <- sapply(varied, function(v) cor(d[[v]], res$ct, method = "spearman"))
-  list(rho = rho, contrib = sort(100 * sign(rho) * rho^2 / sum(rho^2)))
+  list(rho = rho, contrib = sort(100 * sign(rho) * rho^2 / sum(rho^2)),
+       prcc = prcc_calc(d[varied], res$ct))
 }
 
-draw_sens <- function(res, metric = "contrib") {
+draw_sens <- function(res, metric = "prcc") {
   sc <- sens_contrib(res)
   if (is.null(sc)) {
     plot.new(); text(0.5, 0.5, "No assumptions are varying, so there is nothing to rank")
     return(invisible())
   }
-  vals <- if (identical(metric, "rho")) sort(sc$rho) else sc$contrib
   par(mar = c(5, 17, 3, 2))
+  if (identical(metric, "prcc")) {
+    pr   <- sc$prcc[order(sc$prcc$est), ]
+    vals <- setNames(pr$est, pr$id)
+    xl   <- range(c(0, pr$lo, pr$hi)); xl <- xl + c(-1, 1) * 0.12 * diff(xl)
+    mp <- barplot(vals, horiz = TRUE, las = 1, names.arg = labels[pr$id], xlim = xl,
+                  col = ifelse(vals > 0, "steelblue", "#D55E00"),
+                  xlab = "Partial rank correlation (PRCC) with Ct, with 95% interval",
+                  main = "Sensitivity of Ct to each assumption")
+    arrows(pr$lo, mp, pr$hi, mp, angle = 90, code = 3, length = 0.04, lwd = 1.2)
+    text(ifelse(vals > 0, pr$hi, pr$lo), mp, sprintf("%.2f", vals), pos = ifelse(vals > 0, 4, 2), cex = 0.8, xpd = NA)
+    abline(v = 0)
+    return(invisible())
+  }
+  vals <- if (identical(metric, "rho")) sort(sc$rho) else sc$contrib
   xl <- range(c(0, vals)); xl <- xl + c(-1, 1) * 0.2 * diff(xl)
   mp <- barplot(vals, horiz = TRUE, las = 1, names.arg = labels[names(vals)], xlim = xl,
                 col = ifelse(vals > 0, "steelblue", "#D55E00"),
-                xlab = if (identical(metric, "rho")) "Rank correlation with Ct (Spearman rho)" else "Contribution to variance (%)",
+                xlab = if (identical(metric, "rho")) "Rank correlation with Ct (Spearman rho)" else "Share of squared rank correlation (%)",
                 main = "Sensitivity of Ct to each assumption")
-  text(vals, mp, if (identical(metric, "rho")) sprintf("%.2f", vals) else sprintf("rho %.2f", sc$rho[names(vals)]),
+  text(vals, mp, if (identical(metric, "rho")) sprintf("%.2f", vals) else sprintf("%.1f%%", vals),
        pos = ifelse(vals > 0, 4, 2), cex = 0.8, xpd = NA)
   abline(v = 0)
+}
+
+# One assumption's drawn values. The small version is a tile on the page; the large version adds
+# the median and 95% range, and the distribution that was used.
+draw_one <- function(x, label, big = FALSE, spec = NULL) {
+  if (diff(range(x)) == 0) {                       # fixed: every trial used the same value
+    par(mar = if (big) c(5, 5, 6, 2) else c(3, 3, 3, 1))
+    w <- max(abs(x[1]) * 0.1, 0.01)
+    plot(NA, xlim = x[1] + c(-w, w), ylim = c(0, 1), yaxt = "n", xlab = if (big) label else "", ylab = "",
+         main = label, cex.main = if (big) 1.3 else 0.95)
+    segments(x[1], 0, x[1], 0.8, lwd = 4, col = "steelblue")
+    text(x[1], 0.9, sprintf("Fixed at %s", fmt3(x[1])), cex = if (big) 1 else 0.8)
+    return(invisible())
+  }
+  if (!big) {
+    par(mar = c(3, 3.2, 3, 1), mgp = c(1.8, 0.6, 0), cex.main = 0.95)
+    hist(x, breaks = 30, col = "grey70", border = "white", main = label, xlab = "", ylab = "Frequency")
+    return(invisible())
+  }
+  par(mar = c(5, 5, 6, 2))
+  hist(x, breaks = 50, col = "grey70", border = "white", main = "", xlab = label, ylab = "Number of trials")
+  title(main = label, line = 3.6, cex.main = 1.3)
+  if (!is.null(spec)) mtext(spec, side = 3, line = 1.6, cex = 0.85, col = "grey30")
+  q <- quantile(x, c(0.025, 0.5, 0.975))
+  abline(v = q[2], lwd = 2, lty = 2); abline(v = q[c(1, 3)], lwd = 1.5, lty = 3, col = "#b30000")
+  legend("topright", bty = "n", lty = c(2, 3), lwd = c(2, 1.5), col = c("black", "#b30000"),
+         legend = c(sprintf("Median %s", fmt3(q[2])), sprintf("2.5th and 97.5th percentiles: %s and %s", fmt3(q[1]), fmt3(q[3]))))
 }
 
 draw_draws <- function(d) {
@@ -325,6 +507,8 @@ soft_warning <- function(id, s) {
   msg <- character(0)
   if (id == "vec_comp" && (isTRUE(lo < 0) || isTRUE(hi > 1)))
     msg <- c(msg, "Vector competence is a probability, so values outside 0 to 1 are not meaningful.")
+  if (id == "first_bite" && (isTRUE(lo < 0) || isTRUE(hi > N_CLASS - 1)))
+    msg <- c(msg, sprintf("Ages are rounded to whole days and kept between 0 and %d.", N_CLASS - 1))
   if (id == "n_eip") {
     if (isTRUE(lo < 1))   msg <- c(msg, "Incubation periods under 1 day are rounded up to 1.")
     if (isTRUE(hi > 150)) msg <- c(msg, "Incubation periods over 150 days are capped at 150.")
@@ -383,7 +567,7 @@ build_report <- function(res, bounds, prev = NULL, run_labels = NULL, thresh = N
     list("Forecast of total vectorial capacity", function() draw_forecast(res$ct, bounds, prev$ct, run_labels, thresh), 1000, 600,
          "Histogram of total vectorial capacity (Ct) across all trials."),
     list("Sensitivity", function() draw_sens(res), 1000, 600,
-         "Bar chart of each assumption's contribution to the variation in Ct."),
+         "Bar chart of the partial rank correlation (PRCC) between each assumption and Ct, with 95% intervals."),
     list("Assumption draws", function() draw_draws(res$draws), 1000, 800,
          "Histograms of the values drawn for each assumption."),
     list("Survival curves", function() draw_surv(res), 1100, 500,
@@ -471,7 +655,7 @@ shows <- function(id, dists)
 
 # Size of one arrow-key or spinner step, matched to each assumption's scale
 steps <- c(a_bite = 0.01, n_eip = 1, m_dens = 0.01, vec_comp = 0.01,
-           mort_a = 0.0001, mort_b = 0.001, mort_s = 0.01)
+           mort_a = 0.0001, mort_b = 0.001, mort_s = 0.01, growth_r = 0.01, first_bite = 1)
 
 num <- function(id, f, label, s)
   numericInput(paste0(id, "_", f), label, s[[f]], width = "100%",
@@ -482,28 +666,38 @@ with_default_dist <- function(id, s) { s$dist <- lit_dists[[id]]; s }
 
 assumption_ui <- function(id, s) {
   s <- with_default_dist(id, s)
-  wellPanel(
+  wellPanel(class = "assump-card", id = paste0("card_", id),
     div(class = "assump-head",
-      strong(labels[[id]]),
-      div(class = "edited-tools", span(class = "edited-badge", "edited"),
-          actionLink(paste0(id, "_reset"), "reset"))),
-    div(class = "assump-desc", descs[[id]]),
-    selectInput(paste0(id, "_dist"), "Distribution", dist_choices, s$dist),
-    div(class = "dist-help", lapply(dist_choices, function(d)
-      conditionalPanel(shows(id, d), dist_help[[d]]))),
-    conditionalPanel(shows(id, "Fixed"), num(id, "value", "Value", s)),
-    conditionalPanel(shows(id, setdiff(dist_choices, "Fixed")),
-      fluidRow(column(6, num(id, "min", "Min", s)), column(6, num(id, "max", "Max", s)))),
-    conditionalPanel(shows(id, c("Triangular", "PERT")), num(id, "mode", "Likeliest", s)),
-    conditionalPanel(shows(id, "Beta"),
-      fluidRow(column(6, num(id, "shape1", "Shape 1", s)), column(6, num(id, "shape2", "Shape 2", s)))),
-    conditionalPanel(shows(id, c("Normal", "Lognormal")),
-      fluidRow(column(6, num(id, "mean", "Mean", s)), column(6, num(id, "sd", "SD", s)))),
-    plotOutput(paste0(id, "_prev"), height = "52px"),
+      tags$button(type = "button", class = "assump-toggle", `aria-expanded` = "false",
+                  `aria-controls` = paste0("body_", id),
+                  span(class = "chev", icon("chevron-right")), strong(labels[[id]])),
+      div(class = "edited-tools", span(class = "edited-badge", "not run yet"),
+          actionLink(paste0(id, "_reset"), "reset", title = "Reset to the preset's values"))),
+    div(class = "assump-summary", id = paste0(id, "_summary")),
+    plotOutput(paste0(id, "_prev"), height = "48px"),
+    div(class = "assump-upload", id = paste0(id, "_up")),
     div(class = "assump-warn", id = paste0(id, "_warn")),
-    div(class = "assump-err", id = paste0(id, "_err"))
-  )
+    div(class = "assump-err", id = paste0(id, "_err")),
+    div(class = "assump-body", id = paste0("body_", id),
+      div(class = "assump-desc", descs[[id]]),
+      if (id %in% names(card_notes)) div(class = "assump-note", card_notes[[id]]),
+      selectInput(paste0(id, "_dist"), "Distribution", dist_choices, s$dist),
+      div(class = "dist-help", lapply(dist_choices, function(d)
+        conditionalPanel(shows(id, d), dist_help[[d]]))),
+      conditionalPanel(shows(id, "Fixed"), num(id, "value", "Value", s)),
+      conditionalPanel(shows(id, setdiff(dist_choices, "Fixed")),
+        fluidRow(column(6, num(id, "min", "Min", s)), column(6, num(id, "max", "Max", s)))),
+      conditionalPanel(shows(id, c("Triangular", "PERT")), num(id, "mode", "Likeliest", s)),
+      conditionalPanel(shows(id, "Beta"),
+        fluidRow(column(6, num(id, "shape1", "Shape 1", s)), column(6, num(id, "shape2", "Shape 2", s)))),
+      conditionalPanel(shows(id, c("Normal", "Lognormal")),
+        fluidRow(column(6, num(id, "mean", "Mean", s)), column(6, num(id, "sd", "SD", s))))))
 }
+
+# A chip in the jump bar at the top of Define assumptions
+jump_chip <- function(target, text)
+  tags$button(type = "button", class = "jump-chip", `data-target` = target, text, span(class = "jump-count"))
+
 
 # ---- UI ----
 ui <- fluidPage(
@@ -567,7 +761,6 @@ ui <- fluidPage(
     .check-result { font-size: 13px; color: #555; margin-top: 8px; }
     input:-moz-ui-invalid { box-shadow: none; }
     input:disabled, .form-control:disabled { background: #eceeef; color: #8a9096; cursor: not-allowed; }
-    #stable_note { display: none; margin: -2px 0 8px; }
     /* Fixed frame on larger screens: title, settings and tab bar stay put; only tab content scrolls */
     @media (min-width: 768px) {
       html, body { height: 100%; overflow: hidden; }
@@ -626,6 +819,49 @@ ui <- fluidPage(
       line-height: 28px; margin: 0; display: inline-block; box-sizing: border-box; }
     .settings-io .progress { display: none; }
     .dist-help { font-size: 11px; line-height: 1.3; color: #5a6268; margin: -2px 0 8px; }
+    .assump-note { font-size: 11px; line-height: 1.3; color: #8a5a00; background: #fff9e8; border: 1px solid #f0e0a8;
+      border-radius: 4px; padding: 4px 6px; margin: 0 0 8px; }
+    .link-box { background: #f7f7f7; border: 1px solid #e3e3e3; border-radius: 6px; padding: 10px 14px 12px; margin-bottom: 14px; }
+    .corr-add { margin-top: 25px; }
+    .corr-row { font-size: 13px; padding: 3px 0; border-bottom: 1px solid #ececec; }
+    .corr-row a { margin-left: 10px; font-size: 12px; }
+    .corr-row.inactive { color: #5a6268; }
+    .assump-upload { color: #1f5f99; font-size: 12px; margin-top: 4px; }
+    .assump-upload:empty { display: none; }
+    .assump-uploaded { border-left: 3px solid #337ab7; }
+    .jump-bar { position: sticky; top: 0; z-index: 25; background: #fff; display: flex; flex-wrap: wrap;
+      align-items: center; gap: 6px; padding: 7px 0 8px; margin-bottom: 10px; border-bottom: 1px solid #e3e3e3; }
+    .jump-chip { border: 1px solid #c8ced3; background: #fff; color: #333; border-radius: 14px; padding: 2px 11px;
+      font-size: 12.5px; cursor: pointer; transition: background-color .15s, color .15s, border-color .15s; }
+    .jump-chip:hover { background: #f0f4f8; }
+    .jump-chip.active { background: #337ab7; border-color: #2e6da4; color: #fff; }
+    .jump-count { margin-left: 6px; font-size: 11px; opacity: 0.85; }
+    .jump-count:empty { display: none; }
+    .jump-actions { margin-left: auto; font-size: 12px; color: #5a6268; }
+    .jump-sep { margin: 0 6px; color: #9aa0a6; }
+    .link-btn { border: 0; background: none; padding: 0; color: #286090; cursor: pointer; font-size: inherit; }
+    .link-btn:hover { text-decoration: underline; }
+    .howto-open { display: none; font-size: 12.5px; margin: 0 0 8px; }
+    .assump-section { scroll-margin-top: 54px; margin-bottom: 16px; }
+    .cards-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(215px, 1fr)); gap: 12px; align-items: start; }
+    .assump-card { margin: 0; }
+    .assump-toggle { display: flex; gap: 6px; align-items: flex-start; flex: 1; border: 0; background: none; padding: 0;
+      text-align: left; cursor: pointer; font-size: 14px; color: inherit; }
+    .chev { flex: none; font-size: 10px; margin-top: 5px; color: #5a6268; transition: transform .15s; }
+    .assump-card.open .chev, .adv-open .chev { transform: rotate(90deg); }
+    .assump-summary { font-size: 12px; color: #444; margin: 3px 0 2px 16px; line-height: 1.3; }
+    .assump-body { display: none; margin-top: 8px; padding-top: 8px; border-top: 1px solid #e3e3e3; }
+    .assump-card.open .assump-body { display: block; }
+    .adv-toggle { display: flex; gap: 6px; align-items: center; border: 0; background: none; padding: 4px 0;
+      cursor: pointer; font-size: 16px; text-align: left; }
+    .adv-tag { font-size: 11px; color: #5a6268; border: 1px solid #ccd3da; border-radius: 9px; padding: 0 7px; }
+    .adv-status { font-size: 12.5px; color: #5a6268; margin-left: 4px; }
+    .adv-body { display: none; margin-top: 8px; }
+    .adv-open .adv-body { display: block; }
+    .draws-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 10px; }
+    .draw-tile { cursor: zoom-in; border: 1px solid #e3e3e3; border-radius: 6px; padding: 4px; background: #fff;
+      transition: box-shadow .15s, border-color .15s; }
+    .draw-tile:hover, .draw-tile:focus-visible { box-shadow: 0 2px 8px rgba(0,0,0,0.15); border-color: #337ab7; }
     .assump-warn { color: #8a5a00; font-size: 12px; margin-top: 4px; }
     .assump-warn:empty { display: none; }
     a:focus-visible, button:focus-visible, .btn:focus-visible, input:focus-visible,
@@ -645,9 +881,13 @@ ui <- fluidPage(
     @media (max-width: 767px) { .sidebar-arrow, .sidebar-arrow-open { display: none; } }
     .assump-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 6px; }
     .edited-tools { display: none; flex-direction: column; align-items: flex-end; font-size: 11px; line-height: 1.3; }
-    .edited-badge { background: #fff4d6; color: #8a5a00; border: 1px solid #f0d58a; border-radius: 9px; padding: 0 7px; }
-    .assump-edited .edited-tools { display: flex; }
-    .assump-edited { border-left: 3px solid #e0a800; }
+    .edited-badge { display: none; background: #fff4d6; color: #8a5a00; border: 1px solid #f0d58a; border-radius: 9px;
+      padding: 0 7px; white-space: nowrap; }
+    .edited-tools a { display: none; }
+    .assump-changed .edited-tools, .assump-differs .edited-tools { display: flex; }
+    .assump-changed .edited-badge { display: inline-block; }
+    .assump-differs .edited-tools a { display: inline; }
+    .assump-changed { border-left: 3px solid #e0a800; }
     .fade-btn { position: relative; }
     .fade-btn .fb-a { display: inline-block; transition: opacity .25s ease .2s; }
     .fade-btn .fb-b { position: absolute; top: 0; right: 0; bottom: 0; left: 0; display: flex;
@@ -668,11 +908,12 @@ ui <- fluidPage(
       .container-fluid > h2 { margin: 0 0 8px !important; }
       .container-fluid > .row { display: block !important; }
       .container-fluid > .row > .col-sm-3, .nav-tabs, .app-footer, .sidebar-arrow, .sidebar-arrow-open, .dl-row, .howto,
-      .settings-io, .no-print, .edited-tools, .table-tools, .tab-content::before { display: none !important; }
+      .settings-io, .no-print, .edited-tools, .jump-bar, .howto-open, .chev, .table-tools, .tab-content::before { display: none !important; }
       .container-fluid > .row > .col-sm-9 { width: 100% !important; float: none !important; display: block !important; }
       .tabbable { display: block !important; }
       .tab-content { overflow: visible !important; height: auto !important; padding: 0 !important; }
       .well { break-inside: avoid; }
+      .assump-body, .adv-body { display: block !important; }
       img { max-width: 100% !important; }
       .print-only { display: block; font-size: 12px; color: #444; margin: 0 0 10px; }
     }
@@ -725,11 +966,6 @@ ui <- fluidPage(
       selectInput("structure", "Population age structure",
                   c("Stable age distribution" = "stable", "Synchronous emergence" = "synchronous")),
       fluidRow(
-        column(6, numericInput("r", "Growth rate r", round(r_hat, 4), step = 0.01)),
-        column(6, numericInput("sigma", "First bite (d)", 3, min = 0, max = 20))),
-      div(id = "stable_note", class = "assump-desc",
-          "Growth rate and first-bite age apply only to the stable age distribution."),
-      fluidRow(
         column(6, selectInput("n_iter", "Trials",
                               c("500" = 500, "1,000" = 1000, "5,000" = 5000, "10,000 (slow)" = 10000), 1000)),
         column(6, numericInput("seed", HTML(paste0("Seed ", as.character(actionLink("rand_seed", icon("shuffle"), title = "Pick a random seed")))), 1))),
@@ -760,16 +996,27 @@ ui <- fluidPage(
     mainPanel(width = 9,
       tabsetPanel(id = "tabs",
         tabPanel("Define assumptions",
+          div(class = "jump-bar", id = "jump_bar", role = "navigation", `aria-label` = "Jump to a section",
+            jump_chip("sec_transmission", "Transmission"),
+            jump_chip("sec_mortality", "Mortality"),
+            jump_chip("sec_population", "Population"),
+            jump_chip("sec_linking", "Linking"),
+            div(class = "jump-actions",
+              tags$button(type = "button", id = "expand_all", class = "link-btn", "Expand all"),
+              span(class = "jump-sep", "|"),
+              tags$button(type = "button", id = "collapse_all", class = "link-btn", "Collapse all"))),
           div(class = "howto", id = "howto",
             div(class = "howto-title", "Getting started"),
             div(class = "howto-steps",
-              howto_step(1, "Choose assumptions", "Pick a preset in Simulation settings, or edit the cards below."),
+              howto_step(1, "Choose assumptions", "Pick a preset in Simulation settings, or open the cards below to edit them."),
               howto_step(2, "Set up the run", "Choose the mortality model, number of trials and a seed."),
               howto_step(3, "Run and read", "Click ", strong("Run simulation"), " (or press ",
                          tags$kbd("Cmd/Ctrl + Enter"), "), then open the Forecast tab.")),
             div(class = "howto-note", span(class = "legend-dot"),
                 "A purple dot on a tab means it has new results you have not looked at yet."),
             tags$button(type = "button", class = "howto-close", `aria-label` = "Dismiss", HTML("&times;"))),
+          tags$button(type = "button", id = "howto_open", class = "link-btn howto-open",
+                      icon("circle-info"), " Getting started"),
           div(class = "settings-io",
             downloadButton("dl_settings", "Save settings", class = "btn-sm"),
             tags$button(id = "copy_link", type = "button", class = "btn btn-default btn-sm fade-btn",
@@ -779,15 +1026,47 @@ ui <- fluidPage(
                              span(class = "fb-icon", icon("link")), span(class = "fb-msg"))),
             fileInput("load_settings", NULL, buttonLabel = "Load settings", placeholder = "",
                       accept = ".csv", width = "auto")),
-          h4("Transmission"),
-          fluidRow(lapply(names(vc_specs), function(id) column(3, assumption_ui(id, vc_specs[[id]])))),
-          h4("Mortality schedule"),
-          fluidRow(
-            column(3, assumption_ui("mort_a", mort_specs$logistic$mort_a)),
-            column(3, conditionalPanel("input.mort_model != 'exponential'",
-                                       assumption_ui("mort_b", mort_specs$logistic$mort_b))),
-            column(3, conditionalPanel("input.mort_model == 'logistic'",
-                                       assumption_ui("mort_s", mort_specs$logistic$mort_s))))),
+          div(class = "assump-section", id = "sec_transmission",
+            h4("Transmission"),
+            div(class = "cards-grid", lapply(names(vc_specs), function(id) assumption_ui(id, vc_specs[[id]])))),
+          div(class = "assump-section", id = "sec_mortality",
+            h4("Mortality schedule"),
+            div(class = "cards-grid",
+              assumption_ui("mort_a", mort_specs$logistic$mort_a),
+              conditionalPanel("input.mort_model != 'exponential'", assumption_ui("mort_b", mort_specs$logistic$mort_b)),
+              conditionalPanel("input.mort_model == 'logistic'", assumption_ui("mort_s", mort_specs$logistic$mort_s)))),
+          conditionalPanel("input.structure == 'stable'",
+            div(class = "assump-section", id = "sec_population",
+              h4("Population age structure"),
+              div(class = "cards-grid",
+                assumption_ui("growth_r", pop_specs$growth_r),
+                assumption_ui("first_bite", pop_specs$first_bite)))),
+          conditionalPanel("input.structure == 'synchronous'",
+            p(class = "assump-desc", "Synchronous emergence does not use a growth rate or a first-bite age.")),
+          div(class = "assump-section", id = "sec_linking",
+            tags$button(id = "link_toggle", type = "button", class = "adv-toggle", `aria-expanded` = "false",
+                        `aria-controls` = "link_body",
+                        span(class = "chev", icon("chevron-right")), strong("Linking assumptions"),
+                        span(class = "adv-tag", "advanced"), span(id = "link_status", class = "adv-status")),
+            div(class = "link-box adv-body", id = "link_body",
+              p(class = "assump-desc",
+                "By default every assumption is drawn on its own. If assumptions move together, for example",
+                "mortality a and b estimated from the same data, linking them changes how wide the forecast is.",
+                "Set a rank correlation between a pair, or upload joint parameter draws (such as posterior",
+                "samples from a fitted model) that already carry the correlations."),
+              fluidRow(
+                column(3, selectInput("corr_a", "Assumption A", setNames(all_setting_ids, labels[all_setting_ids]))),
+                column(3, selectInput("corr_b", "Assumption B", setNames(all_setting_ids, labels[all_setting_ids]),
+                                      selected = all_setting_ids[2])),
+                column(3, numericInput("corr_rho", "Rank correlation (-0.95 to 0.95)", 0, min = -0.95, max = 0.95, step = 0.05)),
+                column(3, div(class = "corr-add", actionButton("corr_add", "Add correlation", class = "btn-default btn-sm")))),
+              uiOutput("corr_list"),
+              tags$hr(),
+              div(class = "settings-io",
+                fileInput("up_file", NULL, buttonLabel = "Upload parameter draws (CSV)", placeholder = "",
+                          accept = ".csv", width = "auto"),
+                downloadButton("dl_template", "Download template", class = "btn-sm")),
+              uiOutput("up_status")))),
         tabPanel("Forecast",
           uiOutput("forecast_summary"),
           div(class = "no-print",
@@ -808,20 +1087,25 @@ ui <- fluidPage(
           div(class = "table-tools", copy_btn("stats")),
           tableOutput("stats")),
         tabPanel("Sensitivity",
-          helpText("Each bar is an assumption's share of the variation in Ct, based on the squared",
-                   "rank correlation between that input and Ct. Blue bars raise Ct and orange bars lower",
-                   "it. The number beside each bar is the rank correlation (rho). Assumptions that are",
-                   "fixed do not vary and are left out. Use the switch below to show the raw rank",
-                   "correlation (from -1 to 1) instead of the share of variance."),
-          radioButtons("sens_metric", NULL, inline = TRUE,
-                       c("Contribution to variance (%)" = "contrib", "Rank correlation (rho)" = "rho")),
+          helpText("Which assumptions move Ct most. The default, the partial rank correlation coefficient (PRCC),",
+                   "is the rank correlation between one assumption and Ct after removing the effect of all the",
+                   "others, from -1 to 1, with a 95% interval. Blue bars raise Ct and orange bars lower it.",
+                   "Assumptions that are fixed do not vary and are left out. If you have linked assumptions",
+                   "or uploaded draws, read the values with care: the inputs are no longer independent.",
+                   "The model itself has no random noise, so PRCC values are often large; compare their order",
+                   "and sign more than their size."),
+          radioButtons("sens_metric", NULL, inline = TRUE, selected = "prcc",
+                       c("Partial rank correlation (PRCC)" = "prcc", "Rank correlation (rho)" = "rho",
+                         "Share of squared rank correlation (rough guide)" = "contrib")),
           div(class = "dl-row", dl_png("sens_plot", "sensitivity.png")),
           plotOutput("sens_plot", height = 400)),
         tabPanel("Assumption draws",
           helpText("Histograms of the values drawn for each assumption across all trials. An assumption",
-                   "that is fixed shows as a single bar."),
-          div(class = "dl-row", dl_png("draws_plot", "assumption_draws.png")),
-          plotOutput("draws_plot", height = 600)),
+                   "that is fixed shows as a single bar. Click any plot to enlarge it."),
+          div(class = "dl-row",
+              tags$button(type = "button", class = "btn btn-default btn-sm dl-grid", `data-target` = "draws_grid",
+                          `data-file` = "assumption_draws.png", icon("download"), " Download all (PNG)")),
+          uiOutput("draws_grid")),
         tabPanel("Survival curves",
           helpText("Survivorship (the fraction of mosquitoes still alive at each age) and the daily",
                    "mortality hazard for the first 100 trials. Each line is one trial."),
@@ -852,6 +1136,20 @@ ui <- fluidPage(
             "following Styer et al. (2007). Mortality can follow exponential, Gompertz, or",
             "logistic hazards. Vector competence enters as a multiplicative term. Population age",
             "structure can be a stable age distribution or synchronous emergence."),
+          h4("Methods notes"),
+          tags$ul(
+            tags$li("Each trial draws one value for every assumption, runs the age-specific model, and records Ct."),
+            tags$li("Assumptions are drawn independently unless you link them. A rank correlation between two",
+                    "assumptions is imposed with a Gaussian copula, which leaves each assumption's own",
+                    "distribution unchanged. If several requested correlations cannot all hold together they are",
+                    "reduced by the same fraction and the run reports it."),
+            tags$li("Uploaded draws are used as whole rows, so any correlation in the file is kept. Rows are sampled",
+                    "without replacement when the file has at least as many rows as trials, otherwise with replacement."),
+            tags$li("The growth rate r and the age at first bite apply to the stable age distribution and can be given",
+                    "distributions like any other assumption. The default r is solved to reproduce a published",
+                    "Ct, so treat it as a calibration, not a field estimate."),
+            tags$li("Sensitivity uses partial rank correlation coefficients (PRCC) with 95% intervals. The older",
+                    "share-of-squared-correlation view is a rough guide, not a variance decomposition.")),
           h4("Sources"),
           tags$ul(
             tags$li("Macdonald G (1957) The Epidemiology and Control of Malaria. Oxford University Press. ",
@@ -917,24 +1215,39 @@ ui <- fluidPage(
         });
       });
 
-      $(document).on('click', '.howto-close', function() { $('#howto').slideUp(150); });
+      // Click (or Enter / Space) on a draws tile asks the app for the enlarged plot
+      function expandTile(el) { Shiny.setInputValue('expand_draw', $(el).data('id'), {priority: 'event'}); }
+      $(document).on('click', '.draw-tile', function() { expandTile(this); });
+      $(document).on('keydown', '.draw-tile', function(e) {
+        if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); expandTile(this); }
+      });
+
+      // Save all the draws tiles as one image, three to a row
+      $(document).on('click', '.dl-grid', function() {
+        var imgs = $('#' + $(this).data('target') + ' img').toArray();
+        var name = $(this).data('file') || 'plots.png';
+        if (!imgs.length) return;
+        var cols = Math.min(3, imgs.length), w = imgs[0].naturalWidth, h = imgs[0].naturalHeight;
+        var c = document.createElement('canvas');
+        c.width = cols * w; c.height = Math.ceil(imgs.length / cols) * h;
+        var ctx = c.getContext('2d'); ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, c.width, c.height);
+        imgs.forEach(function(im, i) { ctx.drawImage(im, (i % cols) * w, Math.floor(i / cols) * h, w, h); });
+        c.toBlob(function(blob) {
+          var a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = name;
+          document.body.appendChild(a); a.click(); a.remove();
+          setTimeout(function() { URL.revokeObjectURL(a.href); }, 1000);
+        });
+      });
+
       // Allow loading the same settings file twice in a row
       $(document).on('click', '#load_settings', function() { this.value = ''; });
-
-      // Grey out growth rate and first-bite age when they do not apply
-      function syncStructure() {
-        var synchronous = $('#structure').val() === 'synchronous';
-        $('#r, #sigma').prop('disabled', synchronous);
-        $('#stable_note').toggle(synchronous);
-      }
-      $('#structure').on('change', syncStructure);
-      setTimeout(syncStructure, 300);
 
       // Red outline and message on an assumption box with invalid values
       Shiny.addCustomMessageHandler('assumpErr', function(errs) {
         Object.keys(errs).forEach(function(id) {
           var msg = errs[id] || '';
           $('#' + id + '_err').text(msg);
+          if (msg !== '') $('#card_' + id).addClass('open').find('.assump-toggle').attr('aria-expanded', 'true');
           $('#' + id + '_dist').closest('.well').toggleClass('assump-invalid', msg !== '');
         });
       });
@@ -989,13 +1302,12 @@ ui <- fluidPage(
       });
 
       // Shareable link: every setting goes into the address after the # sign
-      var settingIds = ['a_bite', 'n_eip', 'm_dens', 'vec_comp', 'mort_a', 'mort_b', 'mort_s'];
+      var settingIds = ['a_bite', 'n_eip', 'm_dens', 'vec_comp', 'mort_a', 'mort_b', 'mort_s', 'growth_r', 'first_bite'];
       var settingFields = ['value', 'min', 'mode', 'max', 'mean', 'sd', 'shape1', 'shape2'];
       function topWin() { try { void window.top.location.href; return window.top; } catch (e) { return window; } }
       function settingsParams() {
         var p = new URLSearchParams();
         p.set('model', $('#mort_model').val()); p.set('structure', $('#structure').val());
-        p.set('r', $('#r').val()); p.set('sigma', $('#sigma').val());
         p.set('trials', $('#n_iter').val()); p.set('seed', $('#seed').val());
         settingIds.forEach(function(id) {
           p.set(id + '.dist', $('#' + id + '_dist').val());
@@ -1004,6 +1316,7 @@ ui <- fluidPage(
             if (v !== undefined && v !== null && v !== '') p.set(id + '.' + f, v);
           });
         });
+        (window.__corr || []).forEach(function(c, i) { p.set('corr.' + (i + 1), c); });
         return p;
       }
       $(document).on('click', '#copy_link', function() {
@@ -1038,16 +1351,149 @@ ui <- fluidPage(
       $(document).on('click', '#collapse_sidebar', function() { setSidebar(true); });
       $(document).on('click', '#expand_sidebar', function() { setSidebar(false); });
 
+      // Cards whose values come from uploaded draws, and the correlation list (needed for the share link)
+      Shiny.addCustomMessageHandler('uploadedCards', function(up) {
+        window.__upCount = 0;
+        Object.keys(up).forEach(function(id) {
+          var msg = up[id] || '';
+          if (msg !== '') window.__upCount++;
+          $('#' + id + '_up').text(msg);
+          $('#' + id + '_dist').closest('.well').toggleClass('assump-uploaded', msg !== '');
+        });
+        $(document).trigger('vc:linkstate');
+        setTimeout(refreshAll, 50);
+      });
+      window.__corr = [];
+      Shiny.addCustomMessageHandler('corrState', function(c) { window.__corr = c || []; $(document).trigger('vc:linkstate'); });
+
+      // ---- Compact assumption cards, section jump bar, Advanced panel, Getting started ----
+      var cardSections = {
+        sec_transmission: ['a_bite', 'n_eip', 'm_dens', 'vec_comp'],
+        sec_mortality: ['mort_a', 'mort_b', 'mort_s'],
+        sec_population: ['growth_r', 'first_bite']
+      };
+      function fmtNum(v) { var n = parseFloat(v); return isNaN(n) ? '?' : String(parseFloat(n.toPrecision(3))); }
+      function cardSummary(id) {
+        var d = $('#' + id + '_dist').val(), f = function(k) { return fmtNum($('#' + id + '_' + k).val()); };
+        if (d === 'Fixed') return 'Fixed at ' + f('value') + (id === 'growth_r' ? ' (calibrated, see card)' : '');
+        if (d === 'Uniform') return 'Uniform, ' + f('min') + ' to ' + f('max');
+        if (d === 'Triangular' || d === 'PERT') return d + ', ' + f('min') + ' to ' + f('max') + ', likeliest ' + f('mode');
+        if (d === 'Beta') return 'Beta, ' + f('min') + ' to ' + f('max') + ', shapes ' + f('shape1') + ' and ' + f('shape2');
+        if (d === 'Normal' || d === 'Lognormal') return d + ', mean ' + f('mean') + ', SD ' + f('sd') + ', limits ' + f('min') + ' to ' + f('max');
+        return '';
+      }
+      function refreshCounts() {
+        Object.keys(cardSections).forEach(function(sec) {
+          var chip = $('.jump-chip[data-target=\"' + sec + '\"]'), shown = $('#' + sec).is(':visible');
+          chip.toggle(shown);
+          if (!shown) return;
+          var vis = cardSections[sec].filter(function(id) { return $('#card_' + id).is(':visible'); });
+          var varying = vis.filter(function(id) { return $('#' + id + '_dist').val() !== 'Fixed' || $('#card_' + id).hasClass('assump-uploaded'); });
+          chip.find('.jump-count').text(varying.length + '/' + vis.length)
+              .attr('title', varying.length + ' of ' + vis.length + ' assumptions are not fixed');
+        });
+      }
+      function refreshLinkStatus() {
+        var n = (window.__corr || []).length, u = window.__upCount || 0, parts = [];
+        if (n) parts.push(n + (n === 1 ? ' correlation' : ' correlations'));
+        if (u) parts.push('uploaded draws for ' + u + (u === 1 ? ' assumption' : ' assumptions'));
+        $('#link_status').text(parts.length ? parts.join(', ') : 'none set');
+        $('.jump-chip[data-target=\"sec_linking\"] .jump-count').text(parts.length ? 'on' : '');
+      }
+      function refreshAll() {
+        $('.assump-card').each(function() {
+          var id = this.id.replace('card_', '');
+          $('#' + id + '_summary').text($(this).hasClass('assump-uploaded') ? 'From uploaded draws' : cardSummary(id));
+        });
+        refreshCounts(); refreshLinkStatus();
+      }
+      var refreshTimer = null;
+      function scheduleRefresh() { clearTimeout(refreshTimer); refreshTimer = setTimeout(refreshAll, 120); }
+      $(document).on('input change', '.assump-card :input', scheduleRefresh);
+      $(document).on('shiny:inputchanged', function(e) {
+        if (/_dist$|_value$|_min$|_max$|_mode$|_mean$|_sd$|_shape[12]$|^mort_model$|^structure$/.test(e.name)) scheduleRefresh();
+      });
+      $(document).on('vc:linkstate', refreshLinkStatus);
+      setTimeout(refreshAll, 600); setTimeout(refreshAll, 2000);
+
+      // Open and close cards in place; several can stay open together
+      $(document).on('click', '.assump-toggle', function() {
+        var card = $(this).closest('.assump-card'), open = !card.hasClass('open');
+        card.toggleClass('open', open); $(this).attr('aria-expanded', String(open));
+      });
+      $(document).on('click', '#expand_all', function() {
+        $('.assump-card').addClass('open').find('.assump-toggle').attr('aria-expanded', 'true'); setLink(true);
+      });
+      $(document).on('click', '#collapse_all', function() {
+        $('.assump-card').removeClass('open').find('.assump-toggle').attr('aria-expanded', 'false'); setLink(false);
+      });
+
+      // The Linking panel is advanced, so it starts closed
+      function setLink(open) {
+        $('#sec_linking').toggleClass('adv-open', open); $('#link_toggle').attr('aria-expanded', String(open));
+      }
+      $(document).on('click', '#link_toggle', function() { setLink(!$('#sec_linking').hasClass('adv-open')); });
+
+      // Jump bar: scroll to a section (animated, instant if reduced motion is on) and highlight the current one
+      function pageScroller() { return window.innerWidth >= 768 ? document.querySelector('.tab-content') : null; }
+      function scrollToSection(id) {
+        var el = document.getElementById(id); if (!el) return;
+        var sc = pageScroller(), y0 = sc ? sc.scrollTop : window.scrollY;
+        var y1 = Math.max(0, y0 + el.getBoundingClientRect().top - (sc ? sc.getBoundingClientRect().top : 0) - 50);
+        function set(y) { if (sc) { sc.scrollTop = y; } else { window.scrollTo(0, y); } }
+        if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) { set(y1); return; }
+        var t0 = null;
+        function step(ts) {
+          if (t0 === null) t0 = ts;
+          var p = Math.min(1, (ts - t0) / 280), e = 1 - Math.pow(1 - p, 3);
+          set(y0 + (y1 - y0) * e); if (p < 1) requestAnimationFrame(step);
+        }
+        requestAnimationFrame(step);
+      }
+      var forcedChip = null, forcedUntil = 0;
+      $(document).on('click', '.jump-chip', function() {
+        var t = $(this).data('target'); if (t === 'sec_linking') setLink(true);
+        forcedChip = t; forcedUntil = Date.now() + 1500;      // light the chip at once, even if the page cannot scroll that far
+        scrollToSection(t); spy();
+      });
+      var spyQueued = false;
+      function spy() {
+        spyQueued = false;
+        var sc = pageScroller(), base = sc ? sc.getBoundingClientRect().top : 0, active = null;
+        var secs = $('.assump-section:visible');
+        secs.each(function() {
+          if (active === null || this.getBoundingClientRect().top - base <= 70) active = this.id;
+        });
+        var atBottom = sc ? (sc.scrollTop + sc.clientHeight >= sc.scrollHeight - 2)
+                          : (window.scrollY + window.innerHeight >= document.documentElement.scrollHeight - 2);
+        if (atBottom && secs.length && sc && sc.scrollTop > 0) active = secs.last().attr('id');
+        if (forcedChip && Date.now() < forcedUntil && $('#' + forcedChip).is(':visible')) active = forcedChip;
+        $('.jump-chip').removeClass('active').filter('[data-target=\"' + active + '\"]').addClass('active');
+      }
+      document.addEventListener('scroll', function() { if (!spyQueued) { spyQueued = true; requestAnimationFrame(spy); } }, true);
+      setTimeout(spy, 700);
+
+      // Getting started: dismissal is remembered (when the browser allows it) and leaves a one-line link
+      function setHowto(show) {
+        if (show) { $('#howto').slideDown(150); $('#howto_open').hide(); try { localStorage.removeItem('vc_howto'); } catch (e) {} }
+        else { $('#howto').slideUp(150); $('#howto_open').show(); try { localStorage.setItem('vc_howto', 'dismissed'); } catch (e) {} }
+      }
+      $(document).on('click', '.howto-close', function() { setHowto(false); });
+      $(document).on('click', '#howto_open', function() { setHowto(true); });
+      try { if (localStorage.getItem('vc_howto') === 'dismissed') { $('#howto').hide(); $('#howto_open').show(); } } catch (e) {}
+
       // Start over: drop any settings from the address, then reload the app
       Shiny.addCustomMessageHandler('startOver', function(msg) {
         try { var w = topWin(); w.history.replaceState(null, '', w.location.pathname + w.location.search); } catch (e) {}
         window.location.reload();
       });
 
-      // Badge and reset link on assumption cards that differ from the chosen preset
-      Shiny.addCustomMessageHandler('editedCards', function(ed) {
-        Object.keys(ed).forEach(function(id) {
-          $('#' + id + '_dist').closest('.well').toggleClass('assump-edited', !!ed[id]);
+      // Per card: a not-run-yet badge when it changed since the last run, a reset link when it differs from the preset
+      Shiny.addCustomMessageHandler('cardStates', function(st) {
+        Object.keys(st).forEach(function(id) {
+          $('#' + id + '_dist').closest('.well')
+            .toggleClass('assump-changed', !!st[id].changed)
+            .toggleClass('assump-differs', !!st[id].differs);
         });
       });
 
@@ -1083,21 +1529,123 @@ server <- function(input, output, session) {
     for (f in fields) updateNumericInput(session, paste0(id, "_", f), value = s[[f]])
   }
 
-  active_ids <- function(model)
+  # Assumptions in use. Growth rate and first-bite age only matter for the stable age distribution.
+  active_ids <- function(model, structure = input$structure)
     c(names(vc_specs), "mort_a",
       if (model != "exponential") "mort_b",
-      if (model == "logistic") "mort_s")
+      if (model == "logistic") "mort_s",
+      if (identical(structure, "stable")) names(pop_specs))
 
-  setting_ids <- c(names(vc_specs), names(mort_specs$logistic))
+  setting_ids <- all_setting_ids
   loaded <- reactiveVal(NULL)
+
+  # ---- Correlations between assumptions ----
+  empty_pairs <- function() data.frame(a = character(), b = character(), rho = numeric(), stringsAsFactors = FALSE)
+  corr_pairs <- reactiveVal(empty_pairs())
+
+  observe({   # offer only the assumptions in use for the current model and age structure
+    act <- active_ids(input$mort_model, input$structure)
+    ch  <- setNames(act, labels[act])
+    updateSelectInput(session, "corr_a", choices = ch, selected = isolate(if (input$corr_a %in% act) input$corr_a else act[1]))
+    updateSelectInput(session, "corr_b", choices = ch, selected = isolate(if (input$corr_b %in% act) input$corr_b else act[2]))
+  })
+
+  observeEvent(input$corr_add, {
+    a <- input$corr_a; b <- input$corr_b; rho <- input$corr_rho
+    bad <- if (is.null(a) || is.null(b) || identical(a, b)) "Pick two different assumptions."
+           else if (is.na(rho) || abs(rho) > 0.95) "Enter a rank correlation between -0.95 and 0.95."
+           else if (identical(get_spec(a)$dist, "Fixed")) sprintf("%s is fixed, so it cannot be correlated. Give it a distribution first.", labels[[a]])
+           else if (identical(get_spec(b)$dist, "Fixed")) sprintf("%s is fixed, so it cannot be correlated. Give it a distribution first.", labels[[b]])
+           else if (nrow(corr_pairs()) >= 15) "You can add at most 15 correlations."
+    if (!is.null(bad)) { showNotification(bad, type = "error", duration = 6); return() }
+    cp <- corr_pairs()
+    cp <- cp[!((cp$a == a & cp$b == b) | (cp$a == b & cp$b == a)), , drop = FALSE]   # a new value replaces an old one
+    corr_pairs(rbind(cp, data.frame(a = a, b = b, rho = rho, stringsAsFactors = FALSE)))
+  })
+  lapply(1:15, function(i) observeEvent(input[[paste0("corr_rm_", i)]], {
+    cp <- corr_pairs(); if (i <= nrow(cp)) corr_pairs(cp[-i, , drop = FALSE])
+  }, ignoreInit = TRUE))
+
+  output$corr_list <- renderUI({
+    cp <- corr_pairs()
+    if (!nrow(cp)) return(helpText("No correlations set, so every assumption is drawn independently."))
+    act <- active_ids(input$mort_model, input$structure)
+    tagList(lapply(seq_len(nrow(cp)), function(i) {
+      inuse <- cp$a[i] %in% act && cp$b[i] %in% act
+      div(class = paste("corr-row", if (!inuse) "inactive"),
+          sprintf("%s and %s: %+.2f", labels[[cp$a[i]]], labels[[cp$b[i]]], cp$rho[i]),
+          if (!inuse) " (not used with the current model or age structure)",
+          actionLink(paste0("corr_rm_", i), "remove"))
+    }))
+  })
+
+  # The share link needs the correlation list on the page
+  observe(session$sendCustomMessage("corrState",
+            as.list(sprintf("%s;%s;%s", corr_pairs()$a, corr_pairs()$b, corr_pairs()$rho))))
+
+  # ---- Uploaded joint parameter draws ----
+  uploaded <- reactiveVal(NULL)
+  min_ok <- c(a_bite = 0, n_eip = 0, m_dens = 0, vec_comp = 0, mort_a = 0, mort_b = 0, mort_s = 0, growth_r = -Inf, first_bite = 0)
+
+  observeEvent(input$up_file, {
+    df <- tryCatch(read.csv(input$up_file$datapath, comment.char = "#", stringsAsFactors = FALSE), error = function(e) NULL)
+    if (is.null(df) || !nrow(df)) { showNotification("That file could not be read as a CSV with a header row.", type = "error", duration = 8); return() }
+    use <- intersect(names(df), setting_ids)
+    if (!length(use)) {
+      showNotification(sprintf("No column names matched. Use these names: %s. The template has them.", paste(setting_ids, collapse = ", ")),
+                       type = "error", duration = 10); return()
+    }
+    df[use] <- lapply(df[use], function(x) suppressWarnings(as.numeric(x)))
+    probs <- unlist(lapply(use, function(id) {
+      x <- df[[id]]
+      if (anyNA(x) || any(!is.finite(x))) sprintf("%s has blank, non-numeric or infinite values", id)
+      else if (any(x < min_ok[[id]])) sprintf("%s has values below %s", id, min_ok[[id]])
+    }))
+    if (length(probs)) { showNotification(paste("The file was not used:", paste(probs, collapse = "; ")), type = "error", duration = 10); return() }
+    if (nrow(df) < 20) { showNotification("The file needs at least 20 rows.", type = "error", duration = 8); return() }
+    uploaded(list(df = df[use], name = input$up_file$name, ignored = setdiff(names(df), use),
+                  sig = list(input$up_file$name, nrow(df), sum(unlist(df[use])))))
+  })
+  observeEvent(input$up_clear, uploaded(NULL))
+
+  output$up_status <- renderUI({
+    up <- uploaded()
+    if (is.null(up)) return(helpText("No file loaded. Upload a CSV with one column per assumption, named as in the template.",
+                                     "Whole rows are used together, so correlations in the file are kept."))
+    act <- active_ids(input$mort_model, input$structure)
+    used <- intersect(names(up$df), act)
+    tagList(
+      div(sprintf("Using %s rows from %s for: %s.", format(nrow(up$df), big.mark = ","), up$name,
+                  if (length(used)) paste(labels[used], collapse = ", ") else "nothing (none of its columns apply to the current settings)"),
+          actionLink("up_clear", "clear")),
+      if (length(up$ignored)) helpText("Columns not used because they do not match an assumption name:", paste(up$ignored, collapse = ", ")),
+      helpText("Uploaded draws are not included in saved settings or shared links."))
+  })
+
+  observe({   # mark the cards that take their values from the file
+    up <- uploaded(); act <- active_ids(input$mort_model, input$structure)
+    m <- setNames(vector("list", length(setting_ids)), setting_ids)
+    for (id in setting_ids) m[[id]] <- if (!is.null(up) && id %in% names(up$df) && id %in% act)
+      sprintf("Values come from the uploaded draws (%s rows). The settings below are ignored.", format(nrow(up$df), big.mark = ",")) else ""
+    session$sendCustomMessage("uploadedCards", m)
+  })
+
+  output$dl_template <- downloadHandler(
+    filename = function() "parameter_draws_template.csv",
+    content  = function(file) {
+      act <- active_ids(input$mort_model, input$structure)
+      ex  <- vapply(act, function(id) as.numeric(get_spec(id)$value), 0)
+      ex  <- signif(ifelse(is.na(ex), 0, ex), 6)
+      writeLines(paste("# One row per draw, one column per assumption. Delete the columns you do not need.",
+                       "At least 20 rows. Replace the example values with your own draws."), file)
+      write.table(as.data.frame(rbind(ex, ex, ex), row.names = FALSE), file, append = TRUE, sep = ",", row.names = FALSE)
+    })
 
   apply_cfg <- function(v) {
     get1 <- function(k) if (k %in% names(v)) v[[k]] else NA_character_
     num  <- function(k) suppressWarnings(as.numeric(get1(k)))
     if (get1("structure") %in% c("stable", "synchronous"))
       updateSelectInput(session, "structure", selected = get1("structure"))
-    if (!is.na(num("r")))     updateNumericInput(session, "r", value = num("r"))
-    if (!is.na(num("sigma"))) updateNumericInput(session, "sigma", value = num("sigma"))
     if (!is.na(num("seed")))  updateNumericInput(session, "seed", value = num("seed"))
     if (get1("trials") %in% c("500", "1000", "5000", "10000"))
       updateSelectInput(session, "n_iter", selected = get1("trials"))
@@ -1108,13 +1656,29 @@ server <- function(input, output, session) {
       for (f in fields) sp[[f]] <- num(paste0(id, ".", f))
       set_spec(id, sp)
     }
+    # Correlations: a loaded file or link replaces whatever was set
+    pairs <- empty_pairs()
+    for (x in v[grepl("^corr\\.", names(v))]) {
+      parts <- strsplit(x, ";", fixed = TRUE)[[1]]
+      rho <- if (length(parts) == 3) suppressWarnings(as.numeric(parts[3])) else NA
+      if (length(parts) == 3 && all(parts[1:2] %in% setting_ids) && parts[1] != parts[2] && is.finite(rho) && abs(rho) <= 0.95)
+        pairs <- rbind(pairs, data.frame(a = parts[1], b = parts[2], rho = rho, stringsAsFactors = FALSE))
+    }
+    corr_pairs(pairs)
+    # Older settings files and links stored r and the first-bite age as plain numbers
+    for (old in list(c("r", "growth_r"), c("sigma", "first_bite")))
+      if (!is.na(num(old[1])) && is.na(get1(paste0(old[2], ".dist")))) {
+        base <- pop_specs[[old[2]]]; base$dist <- "Fixed"; base$value <- num(old[1]); set_spec(old[2], base)
+      }
   }
 
   output$dl_settings <- downloadHandler(
     filename = function() "vectorial_capacity_settings.csv",
     content  = function(file) {
-      rows <- list(model = input$mort_model, structure = input$structure, r = input$r,
-                   sigma = input$sigma, trials = input$n_iter, seed = input$seed)
+      rows <- list(model = input$mort_model, structure = input$structure,
+                   trials = input$n_iter, seed = input$seed)
+      cp <- corr_pairs()
+      for (i in seq_len(nrow(cp))) rows[[paste0("corr.", i)]] <- sprintf("%s;%s;%s", cp$a[i], cp$b[i], cp$rho[i])
       for (id in setting_ids) {
         sp <- get_spec(id)
         rows[[paste0(id, ".dist")]] <- sp$dist
@@ -1196,7 +1760,7 @@ server <- function(input, output, session) {
   observeEvent(input$goto_about, updateTabsetPanel(session, "tabs", selected = "About"))
 
   apply_preset <- function(preset) {
-    all <- c(vc_specs, mort_specs[[input$mort_model]])
+    all <- c(vc_specs, mort_specs[[input$mort_model]], pop_specs)
     for (id in names(all)) {
       s <- all[[id]]
       s$dist <- if (preset == "lit") lit_dists[[id]] else "Fixed"
@@ -1208,18 +1772,25 @@ server <- function(input, output, session) {
 
   # The preset's own spec for one assumption (what "unedited" means)
   preset_spec <- function(id) {
-    sp <- c(vc_specs, mort_specs[[input$mort_model]])[[id]]
+    sp <- c(vc_specs, mort_specs[[input$mort_model]], pop_specs)[[id]]
     sp$dist <- if (identical(input$preset, "lit")) lit_dists[[id]] else "Fixed"
     sp
   }
 
   # Mark assumption cards whose values differ from the preset, and let each be reset on its own
-  last_edited <- reactiveVal(NULL)
+  run_specs  <- reactiveVal(NULL)     # the assumption values used in the most recent run
+  last_cards <- reactiveVal(NULL)
   observe({
-    ed <- vapply(setting_ids, function(id) !same_spec(get_spec(id), preset_spec(id)), logical(1))
-    if (!identical(ed, isolate(last_edited()))) {
-      last_edited(ed)
-      session$sendCustomMessage("editedCards", as.list(ed))
+    rs  <- run_specs()
+    act <- active_ids(input$mort_model, input$structure)
+    st  <- lapply(setNames(setting_ids, setting_ids), function(id) {
+      cur <- get_spec(id)
+      list(differs = !same_spec(cur, preset_spec(id)),
+           changed = !is.null(rs) && id %in% act && (!(id %in% names(rs)) || !same_spec(cur, rs[[id]])))
+    })
+    if (!identical(st, isolate(last_cards()))) {
+      last_cards(st)
+      session$sendCustomMessage("cardStates", st)
     }
   })
   lapply(setting_ids, function(id)
@@ -1228,8 +1799,8 @@ server <- function(input, output, session) {
   # Snapshot of everything that feeds a run, to tell when results are out of date
   cur_sig <- reactive({
     ids <- active_ids(input$mort_model)
-    list(model = input$mort_model, structure = input$structure, r = input$r,
-         sigma = input$sigma, n = input$n_iter, seed = input$seed,
+    list(model = input$mort_model, structure = input$structure,
+         n = input$n_iter, seed = input$seed, corr = corr_pairs(), upload = uploaded()$sig,
          specs = lapply(setNames(ids, ids), get_spec))
   })
   run_sig <- reactiveVal(NULL)
@@ -1265,33 +1836,23 @@ server <- function(input, output, session) {
 
     t0 <- Sys.time()
     n  <- as.integer(input$n_iter)
-    set.seed(input$seed)
-    d <- as.data.frame(lapply(specs, function(s) draw(n, s)))
-    d$n_eip <- pmin(pmax(round(d$n_eip), 1), 150)
-    b_i <- if ("mort_b" %in% ids) d$mort_b else rep(0, n)
-    s_i <- if ("mort_s" %in% ids) d$mort_s else rep(0, n)
-
-    ct <- numeric(n)
-    withProgress(message = "Running trials", value = 0, {
-      for (i in seq_len(n)) {
-        lt <- life_table(hazard(model, AGES, d$mort_a[i], b_i[i], s_i[i]))
-        Cx <- age_specific_vc(lt, d$n_eip[i], d$m_dens[i] * d$a_bite[i]^2, d$vec_comp[i])
-        ct[i] <- if (input$structure == "stable") ct_stable(lt, Cx, input$r, input$sigma)
-                 else ct_synchronous(Cx)
-        if (i %% 100 == 0) incProgress(100 / n, detail = sprintf("%d of %d", i, n))
-      }
-    })
+    run <- withProgress(message = "Running trials", value = 0,
+      run_model(model, input$structure, specs, n, input$seed, pairs = corr_pairs(), uploaded = uploaded(),
+                progress = function(i, n) incProgress(100 / n, detail = sprintf("%d of %d", i, n))))
+    d <- run$draws; ct <- run$ct; b_i <- run$b; s_i <- run$s
 
     settings <- c(
       sprintf("Probabilistic vectorial capacity simulator, version %s", APP_VERSION),
       sprintf("Run time: %s", format(Sys.time(), "%Y-%m-%d %H:%M:%S")),
       sprintf("Mortality model: %s", model),
       sprintf("Population age structure: %s", input$structure),
-      sprintf("Growth rate r: %s", input$r),
-      sprintf("Age at first bite (days): %s", input$sigma),
       sprintf("Trials: %d", n),
       sprintf("Random seed: %s", input$seed),
-      unlist(Map(function(s, l) sprintf("%s: %s, %s", l, s$dist, describe_spec(s)), specs, labels[ids])))
+      unlist(Map(function(s, l) sprintf("%s: %s, %s", l, s$dist, describe_spec(s)), specs, labels[ids])),
+      if (!is.null(run$achieved))
+        sprintf("Rank correlation: %s and %s, requested %+.2f, achieved %+.2f",
+                labels[run$achieved$a], labels[run$achieved$b], run$achieved$rho, run$achieved$achieved),
+      run$notes)
 
     new_run <- run_count() + 1
     entry <- list(run = new_run, ct = ct,
@@ -1301,6 +1862,7 @@ server <- function(input, output, session) {
     results_val(list(ct = ct, draws = d, model = model, b = b_i, s = s_i,
                      settings = settings, run = new_run))
     run_sig(cur_sig())
+    run_specs(specs)
     run_count(run_count() + 1)
 
     secs <- as.numeric(difftime(Sys.time(), t0, units = "secs"))
@@ -1404,7 +1966,7 @@ server <- function(input, output, session) {
   last_warns <- reactiveVal(NULL)
   observe({
     active <- active_ids(input$mort_model)
-    errs <- vapply(c(names(vc_specs), names(mort_specs$logistic)), function(id) {
+    errs <- vapply(setting_ids, function(id) {
       if (!id %in% active) return("")
       msg <- check_spec(get_spec(id), labels[[id]])
       if (is.null(msg)) "" else substring(msg, nchar(labels[[id]]) + 2)
@@ -1413,7 +1975,7 @@ server <- function(input, output, session) {
       last_errs(errs)
       session$sendCustomMessage("assumpErr", as.list(errs))
     }
-    warns <- vapply(c(names(vc_specs), names(mort_specs$logistic)), function(id) {
+    warns <- vapply(setting_ids, function(id) {
       if (!id %in% active || nzchar(errs[[id]])) return("")
       soft_warning(id, get_spec(id))
     }, character(1))
@@ -1435,17 +1997,60 @@ server <- function(input, output, session) {
   output$stats <- renderTable(stats_df(results()$ct), digits = 3)
 
   output$sens_plot <- renderPlot(draw_sens(results(), input$sens_metric), alt = reactive({
-    sc <- sens_contrib(results())
+    sc <- sens_contrib(results()); m <- input$sens_metric
     if (is.null(sc)) "No assumptions vary, so there is nothing to rank."
-    else if (identical(input$sens_metric, "rho"))
+    else if (identical(m, "prcc")) {
+      k <- which.max(abs(sc$prcc$est))
+      sprintf("Bar chart of the partial rank correlation between each assumption and Ct, with 95%% intervals. Strongest: %s, PRCC %.2f.",
+              labels[[sc$prcc$id[k]]], sc$prcc$est[k])
+    } else if (identical(m, "rho"))
       sprintf("Bar chart of the rank correlation between each assumption and Ct. Strongest: %s, rho %.2f.",
               labels[[names(sc$rho)[which.max(abs(sc$rho))]]], sc$rho[[which.max(abs(sc$rho))]])
-    else sprintf("Bar chart of each assumption's contribution to the variation in Ct. Largest: %s, %.0f%%.",
+    else sprintf("Bar chart of each assumption's share of the squared rank correlation with Ct. Largest: %s, %.0f%%.",
                  labels[[names(sc$contrib)[which.max(abs(sc$contrib))]]], max(abs(sc$contrib)))
   }))
 
-  output$draws_plot <- renderPlot(draw_draws(results()$draws), alt = reactive(
-    sprintf("Histograms of the values drawn for each of %d assumptions across all trials.", ncol(results()$draws))))
+  # One plot output per assumption, shown as tiles that open a larger version when clicked
+  lapply(all_setting_ids, function(id) {
+    output[[paste0("draw_", id)]] <- renderPlot({
+      d <- results()$draws; req(id %in% names(d))
+      draw_one(d[[id]], labels[[id]])
+    }, alt = reactive({
+      d <- results()$draws; req(id %in% names(d)); x <- d[[id]]
+      if (diff(range(x)) == 0) sprintf("%s is fixed at %s.", labels[[id]], fmt3(x[1]))
+      else sprintf("Histogram of the drawn values of %s. Median %s; 95%% of draws between %s and %s. Click to enlarge.",
+                   labels[[id]], fmt3(median(x)), fmt3(quantile(x, 0.025)), fmt3(quantile(x, 0.975)))
+    }))
+  })
+
+  output$draws_grid <- renderUI({
+    d <- results()$draws
+    div(class = "draws-grid", id = "draws_grid",
+        lapply(names(d), function(id)
+          div(class = "draw-tile", tabindex = 0, role = "button", `data-id` = id,
+              `aria-label` = paste("Enlarge the plot for", labels[[id]]),
+              plotOutput(paste0("draw_", id), height = "210px"))))
+  })
+
+  expand_id <- reactiveVal(NULL)
+  observeEvent(input$expand_draw, {
+    id <- input$expand_draw
+    req(id %in% names(results()$draws))
+    expand_id(id)
+    showModal(modalDialog(title = labels[[id]], size = "l", easyClose = TRUE, footer = modalButton("Close"),
+      div(class = "dl-row", dl_png("draw_big", "assumption_draw.png")),
+      plotOutput("draw_big", height = "520px")))
+  })
+  output$draw_big <- renderPlot({
+    id <- expand_id(); req(id)
+    res <- results(); req(id %in% names(res$draws))
+    pre  <- paste0(labels[[id]], ": ")
+    line <- res$settings[startsWith(res$settings, pre)]
+    draw_one(res$draws[[id]], labels[[id]], big = TRUE, spec = if (length(line)) substring(line[1], nchar(pre) + 1))
+  }, alt = reactive({
+    id <- expand_id(); req(id); x <- results()$draws[[id]]
+    sprintf("Enlarged histogram of the drawn values of %s, with the median and the 2.5th and 97.5th percentiles marked.", labels[[id]])
+  }))
 
   output$surv_plot <- renderPlot(draw_surv(results()), alt = "Survivorship and daily mortality hazard curves for the first 100 trials, one line per trial.")
 

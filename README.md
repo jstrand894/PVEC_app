@@ -28,6 +28,14 @@ enter leaves your computer. The first load can take 10 to 30 seconds while R sta
 - See which assumptions you have changed from the preset (an "edited" badge, with a reset
   link on each card), and switch the Sensitivity plot between share of variance and raw
   rank correlation.
+- Link assumptions that move together by setting a rank correlation, or upload joint
+  parameter draws (for example posterior samples from a fitted model) so correlations in the
+  data are kept. The growth rate and first-bite age are ordinary assumptions too, so their
+  uncertainty reaches the forecast and the sensitivity ranking.
+- Keep the Define assumptions tab short: assumptions are compact cards (one-line summary and a
+  small preview) that open in place, a jump bar moves between sections, the advanced linking
+  options start folded away, and the Getting started box stays dismissed once you close it.
+- Read sensitivity as partial rank correlation coefficients (PRCC) with 95% intervals.
 - Hide the settings panel to give plots the full width. Printing a tab prints just its
   content.
 
@@ -64,6 +72,17 @@ This exports the app with Shinylive, updates the "last updated" date and writes 
 to `docs/`. Commit and push `app/` and `docs/`. A GitHub Actions workflow
 (`.github/workflows/rebuild-site.yml`) can also do this automatically when `app/` changes.
 
+## Tests
+
+```bash
+Rscript tests/test_core.R
+```
+
+Checks the age-specific model against the classical closed form and the Styer et al. values,
+that the same seed reproduces a run, that requested correlations are achieved without
+changing any assumption's own distribution, that uploaded draws are used as whole rows, and
+that PRCC matches the textbook formula. The GitHub workflow runs them before rebuilding the site.
+
 ## Repository layout
 
 | Path | What it is |
@@ -72,6 +91,7 @@ to `docs/`. Commit and push `app/` and `docs/`. A GitHub Actions workflow
 | `app/www/` | Images used by the app |
 | `docs/` | The exported site that GitHub Pages serves (generated, do not edit) |
 | `deploy.R` | Rebuilds `docs/` |
+| `tests/test_core.R` | Model and sampling checks |
 | `pics/` | Original photo used on the About tab |
 | `CITATION.cff` | Citation metadata for this software |
 

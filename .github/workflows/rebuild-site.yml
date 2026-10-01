@@ -8,6 +8,7 @@ on:
     paths:
       - "app/**"
       - "deploy.R"
+      - "tests/**"
   workflow_dispatch:
 
 permissions:
@@ -26,6 +27,9 @@ jobs:
       - uses: r-lib/actions/setup-r-dependencies@v2
         with:
           packages: any::shiny, any::shinylive
+
+      - name: Run the model and sampling tests
+        run: Rscript tests/test_core.R
 
       - name: Export the app (deploy.R also stamps the last-updated date)
         run: Rscript deploy.R

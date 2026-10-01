@@ -2,7 +2,7 @@ cff-version: 1.2.0
 message: "If you use this software, please cite it using the metadata below."
 title: "Probabilistic Vectorial Capacity Simulator"
 type: software
-version: "1.0"
+version: "1.1"
 date-released: 2026-10-01
 authors:
   - family-names: Strand
