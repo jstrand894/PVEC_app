@@ -270,6 +270,69 @@ qdraw <- function(u, s) {
                           meanlog, sdlog) })
 }
 
+# Turn a reported 95% interval (and optionally a reported mean) into the parameters of a distribution.
+# `s` holds the card's current Min and Max, which are the support for Beta and the truncation for
+# Normal and Lognormal. Returns list(ok, fields, note) where `fields` are the values to put on the card.
+fit_range <- function(dist, lo, hi, est, s) {
+  fail <- function(msg) list(ok = FALSE, fields = NULL, note = msg)
+  if (is.na(lo) || is.na(hi)) return(fail("Enter the lower and upper ends of the reported 95% interval."))
+  if (lo >= hi) return(fail("The lower end must be below the upper end."))
+  if (!is.na(est) && (est < lo || est > hi)) return(fail("The reported mean should lie inside its interval."))
+  z <- qnorm(0.975)
+  if (dist == "Uniform") {
+    pad <- (hi - lo) * 0.025 / 0.95    # a 95% interval covers the middle 95% of a uniform
+    return(list(ok = TRUE, fields = list(min = lo - pad, max = hi + pad),
+                note = "Min and Max set so the middle 95% of the range matches the interval."))
+  }
+  if (dist == "Normal") {
+    m  <- if (is.na(est)) (lo + hi) / 2 else est
+    sd <- (hi - lo) / (2 * z)
+    out <- list(ok = TRUE, fields = list(mean = m, sd = sd), note = "Mean and SD set from the interval.")
+    if (!is.na(s$min) && !is.na(s$max) && (lo < s$min || hi > s$max))
+      out$note <- paste(out$note, "Part of the interval lies outside this card's Min and Max, which truncate the draws.")
+    return(out)
+  }
+  if (dist == "Lognormal") {
+    if (lo <= 0) return(fail("A lognormal needs a positive lower end."))
+    sdlog <- (log(hi) - log(lo)) / (2 * z)
+    meanlog <- if (is.na(est)) (log(lo) + log(hi)) / 2 else log(est) - sdlog^2 / 2
+    m <- exp(meanlog + sdlog^2 / 2)
+    out <- list(ok = TRUE, fields = list(mean = m, sd = m * sqrt(exp(sdlog^2) - 1)),
+                note = if (is.na(est)) "Mean and SD set so the interval is symmetric on the log scale."
+                       else "Mean set to the reported mean and SD to the interval's width on the log scale.")
+    if (!is.na(s$min) && !is.na(s$max) && (lo < s$min || hi > s$max))
+      out$note <- paste(out$note, "Part of the interval lies outside this card's Min and Max, which truncate the draws.")
+    return(out)
+  }
+  if (dist == "Beta") {
+    mn <- s$min; mx <- s$max
+    if (is.na(mn) || is.na(mx) || mn >= mx) return(fail("Set Min and Max (the range the Beta is stretched over) first."))
+    if (lo < mn || hi > mx) return(fail("The interval must lie inside Min and Max. Widen Min and Max first."))
+    u <- function(x) (x - mn) / (mx - mn)
+    l <- u(lo); h <- u(hi); e <- if (is.na(est)) NA else u(est)
+    loss <- function(p) {
+      a <- exp(p[1]); b <- exp(p[2])
+      r <- c(qbeta(0.025, a, b) - l, qbeta(0.975, a, b) - h, if (!is.na(e)) a / (a + b) - e)
+      sum(r^2) / (h - l)^2
+    }
+    best <- NULL
+    for (st in list(c(0, 0), c(1, 1), c(2, 0.5), c(0.5, 2), c(3, 3)) ) {
+      o <- tryCatch(optim(st, loss, method = "Nelder-Mead", control = list(maxit = 2000, reltol = 1e-12)),
+                    error = function(e) NULL)
+      if (!is.null(o) && (is.null(best) || o$value < best$value)) best <- o
+    }
+    if (is.null(best)) return(fail("The shapes could not be fitted to that interval."))
+    a <- exp(best$par[1]); b <- exp(best$par[2])
+    if (a > 1e4 || b > 1e4) return(fail("The interval is too narrow for its position inside Min and Max. Narrow Min and Max."))
+    got <- mn + (mx - mn) * qbeta(c(0.025, 0.975), a, b)
+    note <- sprintf("Shapes %.2f and %.2f give a 95%% interval of %s to %s and a mean of %s.",
+                    a, b, signif(got[1], 3), signif(got[2], 3), signif(mn + (mx - mn) * a / (a + b), 3))
+    if (best$value > 1e-3) note <- paste(note, "This is the closest match; the mean and interval do not agree exactly.")
+    return(list(ok = TRUE, fields = list(shape1 = a, shape2 = b), note = note))
+  }
+  fail("Fitting works for Uniform, Normal, Lognormal and Beta. Pick one of those first.")
+}
+
 # Uniform draws with the requested rank (Spearman) correlations, using a Gaussian copula.
 # `pairs` has columns a, b, rho. If the requested correlations cannot all hold at once (the matrix is
 # not positive definite) they are shrunk together by the smallest amount that makes them consistent.
@@ -554,6 +617,30 @@ html_table <- function(df) {
 }
 
 # Self-contained HTML report for one run: summary, settings, statistics and figures
+# Comparison for the paper: Styer et al. (2007) published values, the deterministic model at their parameter
+# values, and a probabilistic run in which every assumption in use is Uniform within +/- `spread` of that value.
+paper_comparison <- function(n = 10000, seed = 2026, spread = 0.2, step = function(i, k) {}) {
+  combos <- expand.grid(structure = c("synchronous", "stable"), model = names(styer_pars), stringsAsFactors = FALSE)
+  rows <- lapply(seq_len(nrow(combos)), function(i) {
+    m <- combos$model[i]; st <- combos$structure[i]
+    ids  <- c(names(vc_specs), "mort_a", if (m != "exponential") "mort_b", if (m == "logistic") "mort_s",
+              if (st == "stable") names(pop_specs))
+    base <- c(vc_specs, mort_specs[[m]], pop_specs)[ids]
+    fixed <- lapply(base, function(x) { x$dist <- "Fixed"; x })
+    prob  <- lapply(base, function(x) { x$dist <- "Uniform"; x$min <- x$value * (1 - spread); x$max <- x$value * (1 + spread); x })
+    det <- run_model(m, st, fixed, 2, seed)$ct[1]
+    ct  <- run_model(m, st, prob, n, seed)$ct
+    pub <- validation[[if (st == "stable") "Ct stable (published)" else "Ct synchronous (published)"]][validation$Model == m]
+    step(i, nrow(combos))
+    data.frame(`Mortality model` = m, `Age structure` = st, `Styer et al. (published)` = pub,
+               Deterministic = det, `Difference from published (%)` = 100 * (det - pub) / pub,
+               `Probabilistic median` = median(ct), `Probabilistic mean` = mean(ct),
+               `2.5th percentile` = unname(quantile(ct, 0.025)), `97.5th percentile` = unname(quantile(ct, 0.975)),
+               check.names = FALSE)
+  })
+  do.call(rbind, rows)
+}
+
 build_report <- function(res, bounds, prev = NULL, run_labels = NULL, thresh = NA) {
   esc <- htmltools::htmlEscape
   st  <- summary_text(res$ct)
@@ -584,7 +671,7 @@ build_report <- function(res, bounds, prev = NULL, run_labels = NULL, thresh = N
     "h1{font-size:24px;margin-bottom:4px}h2{font-size:18px;margin-top:30px;border-bottom:1px solid #ddd;padding-bottom:4px}",
     "table{border-collapse:collapse;font-size:14px;margin:8px 0}td,th{border:1px solid #ddd;padding:4px 10px;text-align:left}",
     "th{background:#f3f5f7}img{max-width:100%;height:auto}.muted{color:#666;font-size:13px}</style></head><body>",
-    "<h1>Probabilistic vectorial capacity simulator: report</h1>",
+    "<h1>PVEC report</h1>",
     "<p class='muted'>", esc(res$settings[1]), ". Run ", res$run, ", created ", format(Sys.time(), "%Y-%m-%d %H:%M:%S"), ".</p>",
     "<h2>Summary</h2><p>", head_html, "</p>",
     if (!is.null(st$precision)) paste0("<p class='muted'>", esc(st$precision), "</p>") else "",
@@ -692,7 +779,18 @@ assumption_ui <- function(id, s) {
       conditionalPanel(shows(id, "Beta"),
         fluidRow(column(6, num(id, "shape1", "Shape 1", s)), column(6, num(id, "shape2", "Shape 2", s)))),
       conditionalPanel(shows(id, c("Normal", "Lognormal")),
-        fluidRow(column(6, num(id, "mean", "Mean", s)), column(6, num(id, "sd", "SD", s))))))))
+        fluidRow(column(6, num(id, "mean", "Mean", s)), column(6, num(id, "sd", "SD", s)))),
+      conditionalPanel(shows(id, c("Uniform", "Normal", "Lognormal", "Beta")),
+        tags$details(class = "fit-help",
+          tags$summary("Fit from a reported range"),
+          div(class = "fit-note", "Enter a published 95% interval, and the mean if reported, then fit. This fills in the fields above."),
+          fluidRow(column(6, numericInput(paste0(id, "_fit_lo"), "Lower 95%", NA, width = "100%", step = steps[[id]])),
+                   column(6, numericInput(paste0(id, "_fit_hi"), "Upper 95%", NA, width = "100%", step = steps[[id]]))),
+          numericInput(paste0(id, "_fit_est"), "Mean (optional)", NA, width = "100%", step = steps[[id]]),
+          actionButton(paste0(id, "_fit"), "Fit", class = "btn-sm btn-default"),
+          uiOutput(paste0(id, "_fitmsg")))),
+      textInput(paste0(id, "_source"), "Source", "", width = "100%", placeholder = "e.g. Author (year), table 2")
+      ))))
 }
 
 # A chip in the jump bar at the top of Define assumptions
@@ -702,7 +800,7 @@ jump_chip <- function(target, text)
 
 # ---- UI ----
 ui <- fluidPage(
-  titlePanel("Probabilistic Vectorial Capacity Simulator"),
+  titlePanel("PVEC: Probabilistic Vectorial Capacity Simulator", windowTitle = "PVEC: Probabilistic Vectorial Capacity Simulator"),
   tags$button(id = "expand_sidebar", type = "button", class = "sidebar-arrow-open",
               title = "Show settings", `aria-label` = "Show settings", `aria-expanded` = "false",
               icon("chevron-right")),
@@ -820,6 +918,20 @@ ui <- fluidPage(
       line-height: 28px; margin: 0; display: inline-block; box-sizing: border-box; }
     .settings-io .progress { display: none; }
     .dist-help { font-size: 11px; line-height: 1.3; color: #5a6268; margin: -2px 0 8px; }
+    .assump-card.card-off { position: relative; }
+    .assump-card.card-off > * { opacity: 0.5; filter: grayscale(1); }
+    .assump-card.card-off::after { content: ''; position: absolute; top: 0; right: 0; bottom: 0; left: 0;
+      cursor: not-allowed; z-index: 5; }
+    .assump-card.card-off::before { content: attr(data-tip); position: absolute; left: 50%; top: 50%; z-index: 10;
+      transform: translate(-50%, -50%); width: 86%; padding: 6px 10px; border-radius: 4px; text-align: center;
+      font-size: 12px; line-height: 1.3; color: #fff; background: rgba(33, 37, 41, 0.92); pointer-events: none;
+      opacity: 0; transition: opacity .15s ease; }
+    .assump-card.card-off:hover::before { opacity: 1; }
+    @media (prefers-reduced-motion: reduce) { .assump-card.card-off::before { transition: none; } }
+    .fit-help { margin: 4px 0 8px; font-size: 12px; }
+    .fit-help summary { cursor: pointer; color: #286090; margin-bottom: 4px; }
+    .fit-help .fit-note, .fit-msg { font-size: 11px; line-height: 1.3; color: #5a6268; margin-bottom: 6px; }
+    .fit-msg.bad { color: #a94442; }
     .assump-note { font-size: 11px; line-height: 1.3; color: #8a5a00; background: #fff9e8; border: 1px solid #f0e0a8;
       border-radius: 4px; padding: 4px 6px; margin: 0 0 8px; }
     .link-box { background: #f7f7f7; border: 1px solid #e3e3e3; border-radius: 6px; padding: 10px 14px 12px; margin-bottom: 14px; }
@@ -1034,7 +1146,7 @@ ui <- fluidPage(
                         span(class = "fb-a", icon("share-nodes"), " Share settings"),
                         span(class = "fb-b", `aria-live` = "polite",
                              span(class = "fb-icon", icon("link")), span(class = "fb-msg"))),
-            fileInput("load_settings", NULL, buttonLabel = "Load settings", placeholder = "",
+            fileInput("load_settings", NULL, buttonLabel = tagList(icon("upload"), " Upload settings"), placeholder = "",
                       accept = ".csv", width = "auto")),
           div(class = "assump-section", id = "sec_transmission",
             h4("Transmission"),
@@ -1045,14 +1157,11 @@ ui <- fluidPage(
               assumption_ui("mort_a", mort_specs$logistic$mort_a),
               conditionalPanel("input.mort_model != 'exponential'", assumption_ui("mort_b", mort_specs$logistic$mort_b)),
               conditionalPanel("input.mort_model == 'logistic'", assumption_ui("mort_s", mort_specs$logistic$mort_s)))),
-          conditionalPanel("input.structure == 'stable'",
-            div(class = "assump-section", id = "sec_population",
-              h4("Population age structure"),
-              div(class = "cards-grid",
-                assumption_ui("growth_r", pop_specs$growth_r),
-                assumption_ui("first_bite", pop_specs$first_bite)))),
-          conditionalPanel("input.structure == 'synchronous'",
-            p(class = "assump-desc", "Synchronous emergence does not use a growth rate or a first-bite age.")),
+          div(class = "assump-section", id = "sec_population",
+            h4("Population age structure"),
+            div(class = "cards-grid",
+              assumption_ui("growth_r", pop_specs$growth_r),
+              assumption_ui("first_bite", pop_specs$first_bite))),
           div(class = "assump-section", id = "sec_linking",
             tags$button(id = "link_toggle", type = "button", class = "adv-toggle", `aria-expanded` = "false",
                         `aria-controls` = "link_body",
@@ -1129,10 +1238,23 @@ ui <- fluidPage(
           div(class = "table-tools", copy_btn("validation")),
           div(style = "overflow-x: auto;", tableOutput("validation")),
           p(class = "check-result",
-            sprintf("Largest difference from a published value: %.1f%%. Published values are rounded to one decimal place, so small differences are expected.", max_dev))),
+            sprintf("Largest difference from a published value: %.1f%%. Published values are rounded to one decimal place, so small differences are expected.", max_dev)),
+          h4("Comparison for the paper"),
+          p("Three results side by side for each mortality model and age structure: the value published by",
+            "Styer et al. (2007), this model run deterministically at their parameter values, and a fully",
+            "probabilistic run in which every assumption in use is drawn uniformly within plus or minus 20%",
+            "of that same value. Because the probabilistic run is centred on the deterministic one, the",
+            "difference between the two columns is the effect of parameter uncertainty alone. 10,000 trials,",
+            "random seed 2026. The growth rate r and first-bite age are varied too in the stable age distribution",
+            "(the first-bite age is rounded to a whole day when used)."),
+          div(class = "dl-row",
+              actionButton("run_paper", "Run comparison", class = "btn-primary btn-sm"),
+              downloadButton("dl_paper", "Download CSV", class = "btn-sm")),
+          div(class = "table-tools", copy_btn("paper_tbl")),
+          div(style = "overflow-x: auto;", tableOutput("paper_tbl"))),
         tabPanel("About",
           h4("What this tool does"),
-          p("This app propagates uncertainty in transmission and mosquito mortality parameters",
+          p("PVEC (Probabilistic VECtorial capacity) propagates uncertainty in transmission and mosquito mortality parameters",
             "through an age-specific vectorial capacity model. Each assumption can be fixed or",
             "given a probability distribution; the simulation draws parameter sets at random and",
             "reports the resulting distribution of vectorial capacity (Ct), along with a",
@@ -1321,6 +1443,8 @@ ui <- fluidPage(
         p.set('trials', $('#n_iter').val()); p.set('seed', $('#seed').val());
         settingIds.forEach(function(id) {
           p.set(id + '.dist', $('#' + id + '_dist').val());
+          var src = $('#' + id + '_source').val();
+          if (src) p.set(id + '.source', src);
           settingFields.forEach(function(f) {
             var v = $('#' + id + '_' + f).val();
             if (v !== undefined && v !== null && v !== '') p.set(id + '.' + f, v);
@@ -1397,6 +1521,7 @@ ui <- fluidPage(
           var chip = $('.jump-chip[data-target=\"' + sec + '\"]'), shown = $('#' + sec).is(':visible');
           chip.toggle(shown);
           if (!shown) return;
+          if ($('#' + sec + ' .card-off').length) { chip.find('.jump-count').text('').removeAttr('title'); return; }
           var vis = cardSections[sec].filter(function(id) { return $('#card_' + id).is(':visible'); });
           var varying = vis.filter(function(id) { return $('#' + id + '_dist').val() !== 'Fixed' || $('#card_' + id).hasClass('assump-uploaded'); });
           chip.find('.jump-count').text(varying.length + '/' + vis.length)
@@ -1410,7 +1535,18 @@ ui <- fluidPage(
         $('#link_status').text(parts.length ? parts.join(', ') : 'none set');
         $('.jump-chip[data-target=\"sec_linking\"] .jump-count').text(parts.length ? 'on' : '');
       }
+      // With synchronous emergence the population cards are not used, so grey them out and explain on hover
+      function refreshStructure() {
+        var off = $('#structure').val() === 'synchronous';
+        $('#sec_population .assump-card').each(function() {
+          var c = $(this).toggleClass('card-off', off);
+          if (off) c.removeClass('open').attr('data-tip', 'Synchronous emergence does not use a growth rate or a first-bite age.');
+          else c.removeAttr('data-tip');
+          c.find('.assump-toggle').attr({'aria-expanded': 'false', 'aria-disabled': String(off), tabindex: off ? -1 : 0});
+        });
+      }
       function refreshAll() {
+        refreshStructure();
         $('.assump-card').each(function() {
           var id = this.id.replace('card_', '');
           $('#' + id + '_summary').text($(this).hasClass('assump-uploaded') ? 'From uploaded draws' : cardSummary(id));
@@ -1429,10 +1565,11 @@ ui <- fluidPage(
       // Open and close cards in place; several can stay open together
       $(document).on('click', '.assump-toggle', function() {
         var card = $(this).closest('.assump-card'), open = !card.hasClass('open');
+        if (card.hasClass('card-off')) return;
         card.toggleClass('open', open); $(this).attr('aria-expanded', String(open));
       });
       $(document).on('click', '#expand_all', function() {
-        $('.assump-card').addClass('open').find('.assump-toggle').attr('aria-expanded', 'true'); setLink(true);
+        $('.assump-card:not(.card-off)').addClass('open').find('.assump-toggle').attr('aria-expanded', 'true'); setLink(true);
       });
       $(document).on('click', '#collapse_all', function() {
         $('.assump-card').removeClass('open').find('.assump-toggle').attr('aria-expanded', 'false'); setLink(false);
@@ -1520,6 +1657,9 @@ ui <- fluidPage(
       });
       $(document).on('shown.bs.tab', '#tabs a', function() {
         $(this).removeClass('tab-new').removeAttr('title').removeAttr('aria-label');
+        // All tabs share one scroll area, so a position left on a long tab would carry over and show only the bottom of a short one
+        var sc = pageScroller(); if (sc) sc.scrollTop = 0;
+        setTimeout(spy, 50);
       });
     });
   "))
@@ -1660,6 +1800,8 @@ server <- function(input, output, session) {
     if (get1("trials") %in% c("500", "1000", "5000", "10000"))
       updateSelectInput(session, "n_iter", selected = get1("trials"))
     for (id in setting_ids) {
+      src <- get1(paste0(id, ".source"))
+      if (!is.na(src)) updateTextInput(session, paste0(id, "_source"), value = src)
       d <- get1(paste0(id, ".dist"))
       if (is.na(d) || !d %in% dist_choices) next
       sp <- list(dist = d)
@@ -1692,9 +1834,10 @@ server <- function(input, output, session) {
       for (id in setting_ids) {
         sp <- get_spec(id)
         rows[[paste0(id, ".dist")]] <- sp$dist
+        rows[[paste0(id, ".source")]] <- input[[paste0(id, "_source")]]
         for (f in fields) rows[[paste0(id, ".", f)]] <- sp[[f]]
       }
-      writeLines("# Settings saved from the Probabilistic Vectorial Capacity Simulator. Use Load settings to restore them.", file)
+      writeLines("# Settings saved from PVEC, the Probabilistic Vectorial Capacity Simulator. Use Upload settings to restore them.", file)
       write.table(data.frame(setting = names(rows),
                              value = vapply(rows, function(x) if (is.null(x) || is.na(x)) "" else as.character(x), "")),
                   file, append = TRUE, sep = ",", row.names = FALSE, qmethod = "double")
@@ -1806,6 +1949,23 @@ server <- function(input, output, session) {
   lapply(setting_ids, function(id)
     observeEvent(input[[paste0(id, "_reset")]], set_spec(id, preset_spec(id)), ignoreInit = TRUE))
 
+  # Fit a distribution to a reported 95% interval (and mean), then fill in the card
+  lapply(setting_ids, function(id) {
+    msg <- reactiveVal(NULL)
+    output[[paste0(id, "_fitmsg")]] <- renderUI({
+      m <- msg(); if (is.null(m)) return(NULL)
+      div(class = paste("fit-msg", if (!m$ok) "bad"), m$note)
+    })
+    observeEvent(input[[paste0(id, "_fit")]], {
+      s <- get_spec(id)
+      r <- fit_range(s$dist, input[[paste0(id, "_fit_lo")]], input[[paste0(id, "_fit_hi")]],
+                     input[[paste0(id, "_fit_est")]], s)
+      msg(r)
+      if (r$ok) for (f in names(r$fields))
+        updateNumericInput(session, paste0(id, "_", f), value = signif(r$fields[[f]], 6))
+    }, ignoreInit = TRUE)
+  })
+
   # Snapshot of everything that feeds a run, to tell when results are out of date
   cur_sig <- reactive({
     ids <- active_ids(input$mort_model)
@@ -1852,13 +2012,16 @@ server <- function(input, output, session) {
     d <- run$draws; ct <- run$ct; b_i <- run$b; s_i <- run$s
 
     settings <- c(
-      sprintf("Probabilistic vectorial capacity simulator, version %s", APP_VERSION),
+      sprintf("PVEC (probabilistic vectorial capacity simulator), version %s", APP_VERSION),
       sprintf("Run time: %s", format(Sys.time(), "%Y-%m-%d %H:%M:%S")),
       sprintf("Mortality model: %s", model),
       sprintf("Population age structure: %s", input$structure),
       sprintf("Trials: %d", n),
       sprintf("Random seed: %s", input$seed),
-      unlist(Map(function(s, l) sprintf("%s: %s, %s", l, s$dist, describe_spec(s)), specs, labels[ids])),
+      unlist(Map(function(s, l, id) {
+        src <- trimws(paste(input[[paste0(id, "_source")]], collapse = ""))
+        sprintf("%s: %s, %s%s", l, s$dist, describe_spec(s), if (nzchar(src)) sprintf(" [Source: %s]", src) else "")
+      }, specs, labels[ids], ids)),
       if (!is.null(run$achieved))
         sprintf("Rank correlation: %s and %s, requested %+.2f, achieved %+.2f",
                 labels[run$achieved$a], labels[run$achieved$b], run$achieved$rho, run$achieved$achieved),
@@ -2073,6 +2236,24 @@ server <- function(input, output, session) {
     })
 
   output$validation <- renderTable(validation, digits = 2)
+
+  paper_res <- reactiveVal(NULL)
+  observeEvent(input$run_paper, {
+    withProgress(message = "Running the comparison", value = 0,
+      paper_res(paper_comparison(step = function(i, k) incProgress(1 / k, detail = sprintf("%d of %d", i, k)))))
+  })
+  output$paper_tbl <- renderTable({
+    r <- paper_res()
+    if (is.null(r)) return(data.frame(` ` = "Click Run comparison to compute the table.", check.names = FALSE))
+    r
+  }, digits = 2)
+  output$dl_paper <- downloadHandler(
+    filename = function() "pvec_comparison.csv",
+    content  = function(file) {
+      r <- paper_res()
+      if (is.null(r)) r <- paper_comparison()
+      write.csv(r, file, row.names = FALSE)
+    })
 }
 
 shinyApp(ui, server)

@@ -53,5 +53,23 @@ Rm <- cor(cbind(as.data.frame(lapply(X, rank)), y = rank(y))); P <- solve(Rm); r
 check(all(abs(pc$est - ref) < 1e-6), "PRCC equals the textbook inverse-correlation-matrix formula")
 check(!is.null(tryCatch(prcc_calc(data.frame(x1 = x1, x1b = x1, x3 = x3), y), error = function(e) NULL)), "PRCC does not fail when two inputs are identical")
 
+# --- Fitting a distribution to a reported interval -------------------------------------------------
+sb <- list(min = 0, max = 1, mean = NA, sd = NA)
+fb <- fit_range("Beta", 0.2, 0.7, 0.445, sb)$fields
+q <- qbeta(c(0.025, 0.975), fb$shape1, fb$shape2)
+check(abs(fb$shape1 / (fb$shape1 + fb$shape2) - 0.445) < 0.01 && all(abs(q - c(0.2, 0.7)) < 0.01), "Beta fit reproduces the reported mean and 95% interval")
+fn <- fit_range("Normal", 10, 20, NA, sb)$fields
+check(abs(fn$mean - 15) < 1e-9 && abs(qnorm(0.975, fn$mean, fn$sd) - 20) < 1e-9, "Normal fit reproduces the interval")
+fl <- fit_range("Lognormal", 2, 8, NA, sb)$fields; sl <- sqrt(log(1 + fl$sd^2 / fl$mean^2)); ml <- log(fl$mean) - sl^2 / 2
+check(all(abs(qlnorm(c(0.025, 0.975), ml, sl) - c(2, 8)) < 1e-6), "Lognormal fit reproduces the interval")
+check(!fit_range("Beta", 0.2, 1.4, NA, sb)$ok && !fit_range("Normal", 5, 3, NA, sb)$ok && !fit_range("PERT", 1, 2, NA, sb)$ok, "fit refuses impossible or unsupported input")
+
+# --- Paper comparison -------------------------------------------------------------------------------
+pc1 <- paper_comparison(n = 3000, seed = 7); pc2 <- paper_comparison(n = 3000, seed = 7)
+check(nrow(pc1) == 6 && identical(pc1, pc2), "paper comparison has six rows and reproduces with the same seed")
+check(all(abs(pc1[["Difference from published (%)"]]) < 1), "deterministic column matches the published values within 1%")
+check(all(pc1[["2.5th percentile"]] < pc1$Deterministic & pc1$Deterministic < pc1[["97.5th percentile"]]) &&
+      all(abs(pc1[["Probabilistic median"]] / pc1$Deterministic - 1) < 0.1), "probabilistic runs are centred on the deterministic value")
+
 if (!all(unlist(results))) stop(sprintf("%d check(s) failed", sum(!unlist(results))), call. = FALSE)
 cat(sprintf("\nAll %d checks passed.\n", length(results)))

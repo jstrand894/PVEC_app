@@ -1,6 +1,6 @@
-# Probabilistic Vectorial Capacity Simulator
+# PVEC: Probabilistic Vectorial Capacity Simulator
 
-An interactive tool that propagates uncertainty in transmission and mosquito mortality
+PVEC (Probabilistic VECtorial capacity) is an interactive tool that propagates uncertainty in transmission and mosquito mortality
 parameters through an age-specific vectorial capacity model. Each assumption can be fixed
 or given a probability distribution. The simulation draws many parameter sets at random and
 reports the resulting distribution of total vectorial capacity (Ct), together with a
@@ -35,6 +35,11 @@ enter leaves your computer. The first load can take 10 to 30 seconds while R sta
 - Keep the Define assumptions tab short: assumptions are compact cards (one-line summary and a
   small preview) that open in place, a jump bar moves between sections, the advanced linking
   options start folded away, and the Getting started box stays dismissed once you close it.
+- Record where each assumption comes from in its **Source** box (saved in settings files and share
+  links, and printed in the report), and use **Fit from a reported range** to turn a published 95%
+  interval, and mean if given, into the parameters of a uniform, normal, lognormal or beta distribution.
+- Produce the paper comparison on the Model check tab: Styer et al. published values, the deterministic model, and
+  a probabilistic run with every assumption within plus or minus 20% of the same values, as a table and CSV.
 - Read sensitivity as partial rank correlation coefficients (PRCC) with 95% intervals.
 - Hide the settings panel to give plots the full width. Printing a tab prints just its
   content.
@@ -81,7 +86,7 @@ Rscript tests/test_core.R
 Checks the age-specific model against the classical closed form and the Styer et al. values,
 that the same seed reproduces a run, that requested correlations are achieved without
 changing any assumption's own distribution, that uploaded draws are used as whole rows, and
-that PRCC matches the textbook formula. The GitHub workflow runs them before rebuilding the site.
+that PRCC matches the textbook formula, and that fitting a reported interval returns the same interval. The GitHub workflow runs them before rebuilding the site.
 
 ## Repository layout
 
@@ -99,7 +104,7 @@ that PRCC matches the textbook formula. The GitHub workflow runs them before reb
 
 **Save settings** writes a two-column CSV (`setting`, `value`) listing the mortality model,
 age structure, growth rate, first-bite age, trials, seed, and the distribution and
-parameters of every assumption. Lines starting with `#` are comments. **Load settings**
+parameters of every assumption. Lines starting with `#` are comments. **Upload settings**
 reads the same format back.
 
 ## Citation

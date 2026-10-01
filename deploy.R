@@ -29,7 +29,7 @@ loading <- paste0(
 shinylive::export(
   "app", "docs",
   template_params = list(
-    title = "Probabilistic vectorial capacity simulator",
+    title = "PVEC: Probabilistic vectorial capacity simulator",
     include_in_head = paste0(sprintf("<link rel='icon' href=\"%s\">", favicon),
                              "<style>#root { position: relative; z-index: 1; }</style>"),
     include_before_body = loading))
