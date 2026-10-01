@@ -182,6 +182,19 @@ assumption_ui <- function(id, s) {
 # ---- UI ----
 ui <- fluidPage(
   titlePanel("Probabilistic vectorial capacity simulator"),
+  tags$head(tags$style(HTML("
+    .author-card { display: flex; align-items: center; gap: 24px; max-width: 640px;
+      padding: 20px 24px; background: #f8f9fa; border: 1px solid #e3e6ea;
+      border-radius: 12px; box-shadow: 0 2px 6px rgba(0,0,0,0.06); }
+    .author-photo { width: 130px; height: 130px; flex: none; border-radius: 50%;
+      object-fit: cover; border: 3px solid #fff; box-shadow: 0 1px 4px rgba(0,0,0,0.25); }
+    .author-label { font-size: 12px; letter-spacing: 0.08em; text-transform: uppercase;
+      color: #6c757d; margin-bottom: 2px; }
+    .author-text h4 { margin: 0 0 6px; }
+    .author-text p { margin: 0 0 6px; }
+    .author-note { color: #555; font-size: 14px; }
+    @media (max-width: 520px) { .author-card { flex-direction: column; text-align: center; } }
+  "))),
   sidebarLayout(
     sidebarPanel(width = 3,
       selectInput("mort_model", "Mortality model",
@@ -245,11 +258,24 @@ ui <- fluidPage(
             "structure can be a stable age distribution or synchronous emergence."),
           h4("Sources"),
           tags$ul(
-            tags$li("Macdonald G (1957) The Epidemiology and Control of Malaria. Oxford University Press."),
-            tags$li("Garrett-Jones C (1964) Prognosis for interruption of malaria transmission through assessment of the mosquito's vectorial capacity. Nature 204:1173-1175."),
-            tags$li("Styer LM, Carey JR, Wang J-L, Scott TW (2007) Mosquitoes do senesce: departure from the paradigm of constant mortality. Am J Trop Med Hyg 76:111-117.")),
+            tags$li("Macdonald G (1957) The Epidemiology and Control of Malaria. Oxford University Press. ",
+                    tags$a(href = "https://archive.org/details/in.ernet.dli.2015.549644/page/n11/mode/2up", target = "_blank", "Internet Archive")),
+            tags$li("Garrett-Jones C (1964) Prognosis for interruption of malaria transmission through assessment of the mosquito's vectorial capacity. Nature 204:1173-1175. ",
+                    tags$a(href = "https://doi.org/10.1038/2041173a0", target = "_blank", "https://doi.org/10.1038/2041173a0")),
+            tags$li("Styer LM, Carey JR, Wang J-L, Scott TW (2007) Mosquitoes do senesce: departure from the paradigm of constant mortality. Am J Trop Med Hyg 76:111-117. ",
+                    tags$a(href = "https://doi.org/10.4269/ajtmh.2007.76.111", target = "_blank", "https://doi.org/10.4269/ajtmh.2007.76.111"))),
           p("Parameter ranges and distributions are from the literature as described in the",
-            "accompanying paper."))
+            "accompanying paper."),
+          tags$hr(style = "margin: 30px 0 20px;"),
+          div(class = "author-card",
+            img(src = "headshot.jpg", alt = "Jackson Strand", class = "author-photo"),
+            div(class = "author-text",
+              div(class = "author-label", "About the author"),
+              h4("Jackson Strand"),
+              p("PhD candidate, Montana State University"),
+              p(class = "author-note",
+                "Developed this tool to make probabilistic vectorial capacity forecasts",
+                "accessible alongside the accompanying paper."))))
       )
     )
   )
