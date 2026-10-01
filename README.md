@@ -1,6 +1,6 @@
 <img src="app/www/pvec_logo.svg" alt="PVEC" height="56">
 
-# PVEC: Probabilistic Vectorial Capacity Simulator
+# Probabilistic Vectorial Capacity Simulator
 
 PVEC (Probabilistic VECtorial capacity) is an interactive tool that propagates uncertainty in transmission and mosquito mortality
 parameters through an age-specific vectorial capacity model. Each assumption can be fixed
