@@ -194,10 +194,12 @@ ui <- fluidPage(
       actionButton("preset_styer", "Styer 2007 fixed values", width = "100%"), br(), br(),
       actionButton("preset_lit", "Literature ranges (Part 10)", width = "100%"),
       hr(),
-      actionButton("run", "Run simulation", class = "btn-primary btn-lg", width = "100%")
+      actionButton("run", "Run simulation", class = "btn-primary btn-lg", width = "100%"),
+      br(), br(),
+      textOutput("run_status")
     ),
     mainPanel(width = 9,
-      tabsetPanel(
+      tabsetPanel(id = "tabs",
         tabPanel("Define assumptions",
           h4("Transmission"),
           fluidRow(lapply(names(vc_specs), function(id) column(3, assumption_ui(id, vc_specs[[id]])))),
@@ -270,15 +272,28 @@ server <- function(input, output, session) {
     }
   })
 
-  results <- eventReactive(input$run, {
+  results_val <- reactiveVal(NULL)
+  run_count   <- reactiveVal(0)
+  run_info    <- reactiveVal("No runs yet")
+
+  # Everything downstream waits until at least one run exists
+  results <- reactive(req(results_val()))
+
+  output$run_status <- renderText(run_info())
+
+  observeEvent(input$run, {
     model <- input$mort_model
     ids   <- active_ids(model)
     specs <- lapply(ids, get_spec)
     names(specs) <- ids
     problems <- unlist(Map(check_spec, specs, labels[ids]))
-    validate(need(is.null(problems), paste(problems, collapse = "\n")))
+    if (!is.null(problems)) {
+      showNotification(paste(problems, collapse = ". "), type = "error", duration = 8)
+      return()
+    }
 
-    n <- as.integer(input$n_iter)
+    t0 <- Sys.time()
+    n  <- as.integer(input$n_iter)
     set.seed(input$seed)
     d <- as.data.frame(lapply(specs, function(s) draw(n, s)))
     d$n_eip <- pmin(pmax(round(d$n_eip), 1), 150)
@@ -292,10 +307,24 @@ server <- function(input, output, session) {
         Cx <- age_specific_vc(lt, d$n_eip[i], d$m_dens[i] * d$a_bite[i]^2, d$vec_comp[i])
         ct[i] <- if (input$structure == "stable") ct_stable(lt, Cx, input$r, input$sigma)
                  else ct_synchronous(Cx)
-        if (i %% 250 == 0) incProgress(250 / n)
+        if (i %% 100 == 0) incProgress(100 / n, detail = sprintf("%d of %d", i, n))
       }
     })
-    list(ct = ct, draws = d, model = model, b = b_i, s = s_i)
+
+    results_val(list(ct = ct, draws = d, model = model, b = b_i, s = s_i))
+    run_count(run_count() + 1)
+
+    secs <- as.numeric(difftime(Sys.time(), t0, units = "secs"))
+    msg  <- sprintf("Run %d finished at %s, %s trials in %.1f seconds",
+                    run_count(), format(Sys.time(), "%I:%M:%S %p"),
+                    format(n, big.mark = ","), secs)
+    run_info(msg)
+
+    # Skip the pop up and tab switch for the automatic run when the app first opens
+    if (input$run > 0) {
+      showNotification(msg, type = "message", duration = 5)
+      if (input$tabs == "Define assumptions") updateTabsetPanel(session, "tabs", selected = "Forecast")
+    }
   }, ignoreNULL = FALSE)
 
   cert_bounds <- reactive(c(
