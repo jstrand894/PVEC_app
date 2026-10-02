@@ -2,7 +2,7 @@ library(shiny)
  
 # Shown in the page footer; update when you publish a new version
 LAST_UPDATED <- "October 2, 2026"
-CITE_URL     <- "https://jstrand894.github.io/vc_app/"
+CITE_URL     <- "https://jstrand894.github.io/PVEC_app/"
 CITE_YEAR    <- sub(".*, ", "", LAST_UPDATED)
 APP_VERSION  <- "1.1"
 
