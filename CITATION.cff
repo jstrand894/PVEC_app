@@ -2,14 +2,14 @@ cff-version: 1.2.0
 message: "If you use this software, please cite it using the metadata below."
 title: "PVEC: Probabilistic Vectorial Capacity Simulator"
 type: software
-version: "1.1"
-date-released: 2026-10-01
+version: "1.2"
+date-released: 2026-10-02
 authors:
   - family-names: Strand
     given-names: "Jackson R."
     affiliation: "Montana State University"
-repository-code: "https://github.com/jstrand894/vc_app"
-url: "https://jstrand894.github.io/vc_app/"
+repository-code: "https://github.com/jstrand894/PVEC_app"
+url: "https://jstrand894.github.io/PVEC_app/"
 license: MIT
 abstract: >-
   An interactive tool that propagates uncertainty in transmission and mosquito

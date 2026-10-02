@@ -4,7 +4,7 @@ library(shiny)
 LAST_UPDATED <- "October 2, 2026"
 CITE_URL     <- "https://jstrand894.github.io/PVEC_app/"
 CITE_YEAR    <- sub(".*, ", "", LAST_UPDATED)
-APP_VERSION  <- "1.1"
+APP_VERSION  <- "1.2"
 
 # ---- Fixed settings ----
 MAX_AGE <- 400
@@ -248,7 +248,7 @@ pvec_par <- function() {
       font.main = 2, cex.main = 1.1)
 }
 
-draw_forecast <- function(ct, b, prev = NULL, run_labels = NULL, thresh = NA) {
+draw_forecast <- function(ct, b, prev = NULL, run_labels = NULL, thresh = NA, bins = 50) {
   pvec_par()
   if (!is.null(prev)) {
     runs <- list(ct, prev)
@@ -256,7 +256,7 @@ draw_forecast <- function(ct, b, prev = NULL, run_labels = NULL, thresh = NA) {
     all  <- unlist(runs)
     pad  <- max(diff(range(all)) * 0.05, 0.05 * abs(mean(all)), 1e-6)
     drng <- range(all) + c(-pad, pad)
-    br   <- seq(drng[1], drng[2], length.out = 51)
+    br   <- seq(drng[1], drng[2], length.out = bins + 1)
     xlim <- if (has_thresh(thresh)) range(drng, thresh) else drng     # keep the threshold on the plot
     # A run whose trials all give the same Ct (all assumptions fixed) is drawn as a line, not bars
     hs   <- lapply(runs, function(x) if (diff(range(x)) > 0) hist(x, breaks = br, plot = FALSE))
@@ -273,7 +273,7 @@ draw_forecast <- function(ct, b, prev = NULL, run_labels = NULL, thresh = NA) {
     if (has_thresh(thresh)) draw_threshold(ct, thresh)
     return(invisible())
   }
-  h  <- hist(ct, breaks = 50, plot = FALSE)
+  h  <- hist(ct, breaks = bins, plot = FALSE)
   xl <- range(h$breaks); if (has_thresh(thresh)) xl <- range(xl, thresh)
   plot(h, xlim = xl, col = ifelse(h$mids >= b[1] & h$mids <= b[2], ACCENT, .pv$bar),
        border = .pv$bg, main = "Forecast of total vectorial capacity", xlab = "Ct")
@@ -462,7 +462,7 @@ ct_batch <- function(model, a, b, s, n_eip, MA2, vec_comp, r = NULL, sigma = NUL
 # first_bite when the age structure is stable). Same code path for the app and the tests.
 # Trials are run in blocks of `chunk` so memory stays small and progress can be reported.
 run_model <- function(model, structure, specs, n, seed, pairs = NULL, uploaded = NULL,
-                      progress = function(done, n) {}, chunk = 250L) {
+                      progress = function(done, n) {}, chunk = 250L, adjust = NULL) {
   # Seeding makes the run reproducible, but leave the session's random stream as it was, so other
   # random choices (the shuffle-seed button) are not fixed by the seed of the last run
   old <- if (exists(".Random.seed", envir = globalenv(), inherits = FALSE)) get(".Random.seed", envir = globalenv())
@@ -471,6 +471,12 @@ run_model <- function(model, structure, specs, n, seed, pairs = NULL, uploaded =
   set.seed(seed)
   g <- generate_draws(specs, n, pairs, uploaded)
   d <- g$draws
+  # A temperature what-if scales the incubation period, the initial mortality hazard and the biting rate of every trial
+  if (!is.null(adjust)) {
+    d$n_eip  <- d$n_eip  * adjust[["n_eip"]]
+    d$mort_a <- d$mort_a * adjust[["mort_a"]]
+    d$a_bite <- d$a_bite * adjust[["a_bite"]]
+  }
   d$n_eip <- pmin(pmax(round(d$n_eip), 1), 150)
   ids <- names(specs)
   b_i <- if ("mort_b" %in% ids) d$mort_b else rep(0, n)
@@ -506,14 +512,162 @@ prcc_calc <- function(X, y) {
   data.frame(id = names(X), est = est, lo = tanh(z - 1.96 * se), hi = tanh(z + 1.96 * se), row.names = NULL)
 }
 
+# Temperature what-if: each trial's incubation period, initial mortality hazard and biting rate are multiplied by
+# (1 + pct / 100)^dT, where pct is the percent change per degree and dT the temperature change in degrees C.
+# These per-degree values are placeholders to be replaced with values for a particular vector and pathogen.
+temp_multipliers <- function(dT, pct_eip, pct_mort, pct_bite)
+  c(n_eip = (1 + pct_eip / 100)^dT, mort_a = (1 + pct_mort / 100)^dT, a_bite = (1 + pct_bite / 100)^dT)
+
+# Published temperature responses for the vector-pathogen pairs in the literature behind this tool. Each curve gives the
+# incubation period (n, days), the adult mortality rate (mu, per day) and, where one is built in, the biting rate (a, per day) as
+# functions of temperature in degrees C; values are held at the ends of the range each equation was fitted over.
+#  - Aedes aegypti and dengue virus: Liu-Helmersson J, et al. (2014) PLoS ONE 9:e89783, equations 2, 5 and 6 (biting rate after
+#    Scott et al. 2000, mortality after Yang et al. 2009, incubation period after Watts et al. 1987 and McLean et al. 1974).
+#  - Anopheles and Plasmodium falciparum: mortality after Martens (1997), as given in Parasites & Vectors 6:20 (2013), and the
+#    degree-day rule of 111 degree-days above 16 C for parasite development (Detinova; Macdonald 1957). No biting-rate curve is
+#    built in, so the biting rate is left unchanged.
+TEMP_CURVES <- list(
+  aedes_dengue = list(
+    label = "Aedes aegypti and dengue virus", ref = 27,
+    a  = function(T) 0.0043 * T + 0.0943,
+    n  = function(T) 4 + exp(5.15 - 0.123 * T),
+    mu = function(T) 0.8692 - 0.1590 * T + 0.01116 * T^2 - 3.408e-4 * T^3 + 3.809e-6 * T^4,
+    range = list(a = c(21, 32), n = c(12, 36), mu = c(10.54, 33.41))),
+  anopheles_pf = list(
+    label = "Anopheles and Plasmodium falciparum", ref = 25,
+    a  = NULL,
+    n  = function(T) 111 / (T - 16),
+    mu = function(T) 1 / (-4.4 + 1.31 * T - 0.03 * T^2),
+    range = list(n = c(17, 40), mu = c(5, 39))))
+
+# The factors by which a trait changes when temperature moves from `ref` to `ref + dT` along a published curve. `outside` lists
+# the traits whose new temperature lies beyond the range the equation was fitted over.
+curve_multipliers <- function(curve, ref, dT) {
+  cv <- TEMP_CURVES[[curve]]
+  at <- function(f, rg, T) f(min(max(T, rg[1]), rg[2]))
+  ratio <- function(f, rg) if (is.null(f)) 1 else at(f, rg, ref + dT) / at(f, rg, ref)
+  out <- c(n = ref + dT < cv$range$n[1] || ref + dT > cv$range$n[2],
+           mu = ref + dT < cv$range$mu[1] || ref + dT > cv$range$mu[2],
+           a = !is.null(cv$a) && (ref + dT < cv$range$a[1] || ref + dT > cv$range$a[2]))
+  list(mult = c(n_eip = ratio(cv$n, cv$range$n), mort_a = ratio(cv$mu, cv$range$mu), a_bite = ratio(cv$a, cv$range$a)),
+       outside = names(out)[out])
+}
+
+# The multipliers for a run: a published curve, or the generic percent-per-degree placeholders
+temperature_adjust <- function(curve, ref, dT, pe, pm, pa) {
+  if (is.null(dT) || is.na(dT) || dT == 0) return(NULL)
+  if (!is.null(curve) && curve %in% names(TEMP_CURVES) && !is.null(ref) && !is.na(ref)) return(curve_multipliers(curve, ref, dT))
+  list(mult = temp_multipliers(dT, pe, pm, pa), outside = character(0))
+}
+
+# Which assumptions a run uses, for a given mortality model and age structure
+active_ids_for <- function(model, structure)
+  c(names(vc_specs), "mort_a", if (model != "exponential") "mort_b", if (model == "logistic") "mort_s",
+    if (identical(structure, "stable")) names(pop_specs))
+
+# Rebuild one assumption's spec from a saved settings vector (the same keys as the settings file)
+spec_from_snap <- function(snap, id) {
+  get <- function(k) if (k %in% names(snap)) snap[[k]] else NA_character_
+  d <- get(paste0(id, ".dist"))
+  if (is.na(d) || !nzchar(d)) return(NULL)
+  sp <- list(dist = d)
+  for (f in fields) sp[[f]] <- suppressWarnings(as.numeric(get(paste0(id, ".", f))))
+  sp
+}
+
+# What differs between two saved runs: the model choices, the temperature change, linked assumptions and any assumption whose
+# distribution or values differ. Returns a data frame with one row per difference, or an empty one.
+snap_diff <- function(a, b) {
+  rows <- list()
+  add <- function(what, x, y) rows[[length(rows) + 1]] <<- data.frame(Setting = what, A = x, B = y, stringsAsFactors = FALSE)
+  g <- function(v, k) { x <- if (k %in% names(v)) v[[k]] else NA; if (is.na(x)) "" else as.character(x) }
+  nice <- c(logistic = "Logistic", gompertz = "Gompertz", exponential = "Exponential", stable = "Stable", synchronous = "Synchronous")
+  for (k in c("model", "structure")) if (!identical(g(a, k), g(b, k)))
+    add(c(model = "Mortality model", structure = "Age structure")[[k]], nice[[g(a, k)]], nice[[g(b, k)]])
+  tr <- function(v) format(suppressWarnings(as.numeric(gsub(",", "", g(v, "trials")))), big.mark = ",")
+  if (!identical(tr(a), tr(b))) add("Trials", tr(a), tr(b))
+  if (!identical(g(a, "seed"), g(b, "seed"))) add("Seed", g(a, "seed"), g(b, "seed"))
+  tmp <- function(v) { d <- suppressWarnings(as.numeric(g(v, "temp"))); if (is.na(d) || d == 0) "No change" else sprintf("%+g \u00b0C", d) }
+  if (!identical(tmp(a), tmp(b))) add("Temperature change", tmp(a), tmp(b))
+  cvn <- function(v) { k <- g(v, "temp.curve"); if (k %in% names(TEMP_CURVES)) sprintf("%s (from %s \u00b0C)", TEMP_CURVES[[k]]$label, g(v, "temp.ref")) else "Generic per-degree changes" }
+  if (tmp(a) != "No change" || tmp(b) != "No change") if (!identical(cvn(a), cvn(b))) add("Temperature response", cvn(a), cvn(b))
+  cr <- function(v) { k <- v[grepl("^corr\\.", names(v))]; k <- k[nzchar(k)]; if (!length(k)) "None" else paste(sort(unname(k)), collapse = "; ") }
+  if (!identical(cr(a), cr(b))) add("Linked assumptions", cr(a), cr(b))
+  ids <- union(active_ids_for(g(a, "model"), g(a, "structure")), active_ids_for(g(b, "model"), g(b, "structure")))
+  for (id in ids) {
+    sa <- spec_from_snap(a, id); sb <- spec_from_snap(b, id)
+    txt <- function(sp) if (is.null(sp)) "Not used" else paste0(sp$dist, ": ", describe_spec(sp))
+    if (is.null(sa) != is.null(sb) || (!is.null(sa) && !same_spec(sa, sb))) add(labels[[id]], txt(sa), txt(sb))
+  }
+  if (!length(rows)) return(data.frame(Setting = character(), A = character(), B = character()))
+  do.call(rbind, rows)
+}
+
+# The share of the variance in y that one input explains on its own (its first-order, or main-effect, index): the variance of
+# the average y within slices of x, divided by the total variance. It is estimated from the run itself, so it needs no extra
+# model runs and works when inputs are linked. The bias that comes from using slices is removed. Interactions between
+# inputs are not credited to any one input, so the shares usually add up to less than 100%.
+first_order_index <- function(x, y, bins = 20L) {
+  n <- length(y); sst <- sum((y - mean(y))^2)
+  if (n < 30 || sst == 0 || sd(x) == 0) return(0)
+  B  <- max(5L, min(bins, n %/% 50L))
+  br <- unique(quantile(x, seq(0, 1, length.out = B + 1), names = FALSE))
+  if (length(br) < 3) return(0)
+  g  <- cut(x, br, include.lowest = TRUE)
+  m  <- tapply(y, g, mean); k <- tapply(y, g, length)
+  ssb <- sum(k * (m - mean(y))^2, na.rm = TRUE)
+  bias <- (length(br) - 2) / (n - 1)                  # what slicing alone would explain by chance
+  max(0, min(1, (ssb / sst - bias) / (1 - bias)))
+}
+
 # ---- Plots and summaries shared by the screen and the downloadable report ----
 sens_contrib <- function(res) {
   d      <- res$draws
   varied <- names(d)[sapply(d, function(v) sd(v) > 0)]
   if (length(varied) == 0 || sd(res$ct) == 0) return(NULL)
   rho <- sapply(varied, function(v) cor(d[[v]], res$ct, method = "spearman"))
-  list(rho = rho, contrib = sort(100 * sign(rho) * rho^2 / sum(rho^2)),
+  vari <- sort(100 * vapply(varied, function(v) first_order_index(d[[v]], res$ct), 0))
+  list(rho = rho, contrib = sort(100 * sign(rho) * rho^2 / sum(rho^2)), vari = vari,
        prcc = prcc_calc(d[varied], res$ct))
+}
+
+# Where the heaviest part of the forecast comes from. Looks at the highest 1% of trials (at least 10) and asks, for each
+# varying assumption, where its draws in those trials sit within all of its draws (its percentile). An input whose draws in
+# the tail sit near the bottom or top is driving the tail. `heavy` is TRUE when the 99th percentile of Ct is at least five
+# times the median.
+tail_info <- function(res) {
+  ct <- res$ct; d <- res$draws; n <- length(ct)
+  varied <- names(d)[sapply(d, function(v) sd(v) > 0)]
+  if (n < 100 || !length(varied) || sd(ct) == 0) return(NULL)
+  q <- quantile(ct, c(0.5, 0.99), names = FALSE)
+  pct <- as.data.frame(lapply(d[varied], function(v) rank(v, ties.method = "average") / n))
+  top <- order(ct, decreasing = TRUE)[seq_len(max(10L, ceiling(0.01 * n)))]
+  med <- vapply(pct, function(p) median(p[top]), 0)
+  drivers <- data.frame(id = varied, med = med, ext = abs(med - 0.5) * 2, row.names = NULL)
+  list(heavy = q[1] > 0 && q[2] / q[1] >= 5, ratio = if (q[1] > 0) q[2] / q[1] else Inf, varied = varied, pct = pct,
+       top = top, top5 = order(ct, decreasing = TRUE)[1:5], drivers = drivers[order(-drivers$ext), ])
+}
+
+ordinal <- function(p) {
+  k <- min(max(round(100 * p), 1), 99)
+  sfx <- if (k %% 100 %in% 11:13) "th" else switch(as.character(k %% 10), "1" = "st", "2" = "nd", "3" = "rd", "th")
+  paste0(k, sfx)
+}
+
+# The same draws run through the other population age structure. Going to the stable age distribution needs a growth rate
+# and a first-bite age, which a synchronous run does not have, so the app's default values are used.
+ct_other_structure <- function(res, from, progress = function(done, n) {}, chunk = 250L) {
+  d <- res$draws; n <- nrow(d); to_stable <- identical(from, "synchronous")
+  r_i   <- if (to_stable) rep(pop_specs$growth_r$value, n)
+  sig_i <- if (to_stable) rep(pmin(pmax(round(pop_specs$first_bite$value), 0), N_CLASS - 1), n)
+  ct <- numeric(n)
+  for (from_i in seq(1L, n, by = chunk)) {
+    i <- from_i:min(from_i + chunk - 1L, n)
+    ct[i] <- ct_batch(res$model, d$mort_a[i], res$b[i], res$s[i], d$n_eip[i], d$m_dens[i] * d$a_bite[i]^2,
+                      d$vec_comp[i], if (to_stable) r_i[i], if (to_stable) sig_i[i])
+    progress(max(i), n)
+  }
+  ct
 }
 
 draw_sens <- function(res, metric = "prcc", sc = sens_contrib(res)) {
@@ -538,17 +692,58 @@ draw_sens <- function(res, metric = "prcc", sc = sens_contrib(res)) {
     abline(v = 0)
     return(invisible())
   }
-  vals <- if (identical(metric, "rho")) sort(sc$rho) else sc$contrib
+  vals <- switch(metric, rho = sort(sc$rho), var = sc$vari, sc$contrib)
   xl <- range(c(0, vals)); xl <- xl + c(-1, 1) * 0.2 * diff(xl)
   cols <- ifelse(vals > 0, ACCENT, "#D55E00")
   mp <- barplot(vals, horiz = TRUE, las = 1, names.arg = labels[names(vals)], xlim = xl, col = NA, border = NA,
-                xlab = if (identical(metric, "rho")) "Rank correlation with Ct (Spearman rho)" else "Share of squared rank correlation (%)",
+                xlab = switch(metric, rho = "Rank correlation with Ct (Spearman rho)",
+                                      var = "Share of the variance in Ct explained by the assumption alone (%)",
+                                      "Share of squared rank correlation (%)"),
                 main = "Sensitivity of Ct to each assumption")
+  if (identical(metric, "var"))
+    mtext(sprintf("The bars add up to %.0f%%; the rest comes from assumptions acting together.", sum(vals)), side = 1, line = 4.2, cex = 0.8, col = .pv$muted)
   grid(nx = NULL, ny = NA, col = .pv$grid, lty = 1)
   barplot(vals, horiz = TRUE, add = TRUE, axes = FALSE, names.arg = NA, col = cols, border = NA)
   text(vals, mp, if (identical(metric, "rho")) sprintf("%.2f", vals) else sprintf("%.1f%%", vals),
        pos = ifelse(vals > 0, 4, 2), cex = 0.8, xpd = NA)
   abline(v = 0)
+}
+
+# Ct against one assumption's drawn values, with a smooth trend and the rank correlation
+draw_scatter <- function(x, ct, label) {
+  pvec_par()
+  par(mar = c(5, 5, 4, 2))
+  k <- if (length(x) > 3000) sample.int(length(x), 3000) else seq_along(x)
+  plot(x[k], ct[k], pch = 16, cex = 0.6, col = adjustcolor(ACCENT, 0.35), xlab = label, ylab = "Ct",
+       main = sprintf("Ct against %s", label))
+  if (diff(range(x)) > 0) {
+    lines(lowess(x, ct), lwd = 3, col = "#D55E00")
+    legend("topright", bty = "n", lty = 1, lwd = 3, col = "#D55E00",
+           legend = sprintf("Trend (rank correlation %.2f)", suppressWarnings(cor(x, ct, method = "spearman"))))
+  }
+}
+
+# Median lifespan of each trial's mosquitoes (the age when half have died), for up to the first 2,000 trials
+lifespans <- function(res) {
+  n <- min(2000, nrow(res$draws))
+  vapply(seq_len(n), function(i) {
+    lt <- life_table(hazard(res$model, AGES, res$draws$mort_a[i], res$b[i], res$s[i]))
+    k <- which(lt$lx < 0.5)[1]
+    if (is.na(k)) NA_real_ else k - 1
+  }, 0)
+}
+
+draw_lifespans <- function(ls) {
+  pvec_par()
+  ls <- ls[!is.na(ls)]
+  if (!length(ls)) { plot.new(); text(0.5, 0.5, "Mosquitoes live too long here for a median lifespan to be found"); return(invisible()) }
+  par(mar = c(5, 5, 4, 2))
+  hist(ls, breaks = max(10, min(40, length(unique(ls)))), col = ACCENT, border = .pv$bg, main = sprintf("Median lifespan across %s trials", format(length(ls), big.mark = ",")),
+       xlab = "Median lifespan (days)", ylab = "Number of trials")
+  q <- quantile(ls, c(0.025, 0.5, 0.975))
+  abline(v = q[2], lwd = 2, lty = 2); abline(v = q[c(1, 3)], lwd = 1.5, lty = 3, col = .pv$red)
+  legend("topright", bty = "n", lty = c(2, 3), lwd = c(2, 1.5), col = c(.pv$fg, .pv$red),
+         legend = c(sprintf("Median %s days", fmt3(q[2])), sprintf("95%% of trials: %s to %s days", fmt3(q[1]), fmt3(q[3]))))
 }
 
 # One assumption's drawn values. The small version is a tile on the page; the large version adds
@@ -593,28 +788,31 @@ surv_tables <- function(res) {
     life_table(hazard(res$model, AGES, res$draws$mort_a[i], res$b[i], res$s[i])))
 }
 
-draw_surv <- function(res, view = "both", lts = surv_tables(res)) {
+draw_surv <- function(res, view = "both", lts = surv_tables(res), k = 100, xmax = 80, hl = NULL) {
   pvec_par()
-  x    <- 0:80
+  lts  <- lts[seq_len(min(k, length(lts)))]
+  x    <- 0:xmax
   both <- identical(view, "both")
   if (both) par(mfrow = c(1, 2))
   if (view %in% c("both", "surv")) {
     plot(NA, xlim = range(x), ylim = c(0, 1), xlab = "Age (days)", ylab = "Survivorship (fraction alive)",
-         main = "Survivorship, first 100 trials", las = 1)
+         main = sprintf("Survivorship, first %d trials", length(lts)), las = 1)
     grid(col = .pv$grid, lty = 1)
     for (lt in lts) lines(x, lt$lx[x + 1], col = adjustcolor(ACCENT, 0.18))
     lines(x, apply(sapply(lts, function(lt) lt$lx[x + 1]), 1, median), lwd = 3, col = .pv$fg)
     ne <- median(res$draws$n_eip[seq_along(lts)]); abline(v = ne, lty = 3, lwd = 2, col = "#D55E00")
+    if (!is.null(hl) && hl <= length(lts)) lines(x, lts[[hl]]$lx[x + 1], lwd = 3, col = "#7b2cbf")
     legend("topright", bty = "n", lty = c(1, 3), lwd = c(3, 2), col = c(.pv$fg, "#D55E00"), cex = 0.9,
            legend = c("Median of the trials", sprintf("Median incubation period, %s days", fmt3(ne))))
   }
   if (view %in% c("both", "hazard")) {
     ymax <- max(sapply(lts, function(lt) max(lt$u[x + 1])))
     plot(NA, xlim = range(x), ylim = c(0, ymax), xlab = "Age (days)", ylab = "Daily mortality hazard",
-         main = "Daily mortality hazard, first 100 trials", las = 1)
+         main = sprintf("Daily mortality hazard, first %d trials", length(lts)), las = 1)
     grid(col = .pv$grid, lty = 1)
     for (lt in lts) lines(x, lt$u[x + 1], col = adjustcolor("#D55E00", 0.18))
     lines(x, apply(sapply(lts, function(lt) lt$u[x + 1]), 1, median), lwd = 3, col = .pv$fg)
+    if (!is.null(hl) && hl <= length(lts)) lines(x, lts[[hl]]$u[x + 1], lwd = 3, col = "#7b2cbf")
     legend("topleft", bty = "n", lty = 1, lwd = 3, col = .pv$fg, legend = "Median of the trials", cex = 0.9)
   }
 }
@@ -785,7 +983,7 @@ paper_table <- function(step = function(i, k) {}, cache = PAPER_CACHE) {
   paper_comparison(step = step)
 }
 
-build_report <- function(res, bounds, prev = NULL, run_labels = NULL, thresh = NA) {
+build_report <- function(res, bounds, prev = NULL, run_labels = NULL, thresh = NA, summaries = NULL) {
   esc <- htmltools::htmlEscape
   st  <- summary_text(res$ct)
   head_html <- if (st$fixed) esc(st$headline) else sprintf("<b>Median Ct %s</b>. %s", st$median, esc(st$rest))
@@ -796,16 +994,21 @@ build_report <- function(res, bounds, prev = NULL, run_labels = NULL, thresh = N
   }))
   figs <- list(
     list("Forecast of total vectorial capacity", function() draw_forecast(res$ct, bounds, prev$ct, run_labels, thresh), 1000, 600,
-         "Histogram of total vectorial capacity (Ct) across all trials."),
+         "Histogram of total vectorial capacity (Ct) across all trials.", "forecast"),
     list("Sensitivity", function() draw_sens(res), 1000, 600,
-         "Bar chart of the partial rank correlation (PRCC) between each assumption and Ct, with 95% intervals."),
+         "Bar chart of the partial rank correlation (PRCC) between each assumption and Ct, with 95% intervals.", "sens"),
+    list("Sensitivity: share of variance", function() draw_sens(res, "var"), 1000, 600,
+         "Bar chart of the share of the variance in Ct that each assumption explains on its own.", NA),
     list("Assumption draws", function() draw_draws(res$draws), 1000, 800,
-         "Histograms of the values drawn for each assumption."),
+         "Histograms of the values drawn for each assumption.", "draws"),
     list("Survival curves", function() draw_surv(res), 1100, 500,
-         "Survivorship and daily mortality hazard for the first 100 trials."))
+         "Survivorship and daily mortality hazard for the first 100 trials.", "surv"))
   fig_html <- vapply(figs, function(f) {
     b64 <- png_b64(f[[2]], f[[3]], f[[4]])
-    paste0("<h2>", esc(f[[1]]), "</h2>",
+    sm <- if (!is.na(f[[6]]) && !is.null(summaries[[f[[6]]]]) && nzchar(summaries[[f[[6]]]]))
+      paste0("<div class='summary'><b>Quick summary.</b> ", summaries[[f[[6]]]],
+             "<div class='muted'>This summary is generated automatically, so please excuse any mistakes. The data below is always the better summary.</div></div>") else ""
+    paste0("<h2>", esc(f[[1]]), "</h2>", sm,
            if (is.null(b64)) "<p><i>Figure not available in this environment. Use the Download plot buttons in the app.</i></p>"
            else sprintf("<img alt=\"%s\" src=\"data:image/png;base64,%s\">", esc(f[[5]]), b64))
   }, "")
@@ -814,7 +1017,8 @@ build_report <- function(res, bounds, prev = NULL, run_labels = NULL, thresh = N
     "body{font-family:Helvetica,Arial,sans-serif;max-width:900px;margin:30px auto;padding:0 16px;color:#222;line-height:1.45}",
     "h1{font-size:24px;margin-bottom:4px}h2{font-size:18px;margin-top:30px;border-bottom:1px solid #ddd;padding-bottom:4px}",
     "table{border-collapse:collapse;font-size:14px;margin:8px 0}td,th{border:1px solid #ddd;padding:4px 10px;text-align:left}",
-    "th{background:#f3f5f7}img{max-width:100%;height:auto}.muted{color:#666;font-size:13px}</style></head><body>",
+    "th{background:#f3f5f7}img{max-width:100%;height:auto}.muted{color:#666;font-size:13px}",
+    ".summary{background:#eaf2fb;border-left:4px solid #2b6cb0;padding:8px 14px;margin:10px 0}.summary .muted{margin-top:6px;font-style:italic}</style></head><body>",
     "<h1>PVEC report</h1>",
     "<p class='muted'>", esc(res$settings[1]), ". Run ", res$run, ", created ", format(Sys.time(), "%Y-%m-%d %H:%M:%S"), ".</p>",
     "<h2>Summary</h2><p>", head_html, "</p>",
@@ -859,6 +1063,35 @@ howto_step <- function(n, title, ...)
 dl_png <- function(target, file)
   tags$button(type = "button", class = "btn btn-default btn-sm dl-img",
               `data-target` = target, `data-file` = file, icon("download"), " Download plot (PNG)")
+
+# The "Dig deeper" section under the forecast: a row of buttons, and one panel open at a time
+tool_tab <- function(id, ic, label)
+  tags$button(type = "button", class = "tool-tab", `data-panel` = id, `aria-expanded` = "false", `aria-controls` = paste0("tool_", id), icon(ic), span(label))
+tool_panel <- function(id, title, ...)
+  div(class = "tool-panel", id = paste0("tool_", id),
+      div(class = "tool-panel-in", div(class = "tool-card", h4(class = "tool-card-title", title), ...)))
+
+# One "Download" menu per tab: a button that drops up a list of the downloads for that tab
+dl_menu <- function(...)
+  div(class = "btn-group dropup dl-menu no-print",
+      tags$button(type = "button", class = "btn btn-default btn-sm dropdown-toggle", `data-toggle` = "dropdown",
+                  `aria-haspopup` = "true", `aria-expanded` = "false", icon("download"), " Download ", span(class = "caret")),
+      tags$ul(class = "dropdown-menu", role = "menu", ...))
+dl_img_item <- function(target, file, label = "Plot image (PNG)", cls = "dl-img")
+  tags$li(tags$a(href = "#", class = cls, `data-target` = target, `data-file` = file, label))
+
+# "How to read" help: a button with a ? at the start that opens a short explanation
+how_to <- function(title, ...) tags$details(class = "how-to-read", tags$summary(title), ...)
+
+# The two presets side by side, built from the specs the app itself uses (mortality shown for the logistic model)
+preset_table <- function() {
+  ids <- c(names(vc_specs), names(mort_specs$logistic), names(pop_specs))
+  base <- c(vc_specs, mort_specs$logistic, pop_specs)
+  data.frame(Assumption = unname(labels[ids]),
+             `Literature preset` = vapply(ids, function(id) { sp <- base[[id]]; sp$dist <- lit_dists[[id]]; paste0(sp$dist, ": ", describe_spec(sp)) }, ""),
+             `Fixed preset` = vapply(ids, function(id) { sp <- base[[id]]; sp$dist <- "Fixed"; paste0("Fixed: ", describe_spec(sp)) }, ""),
+             check.names = FALSE, row.names = NULL, stringsAsFactors = FALSE)
+}
 
 # Tiny preview of one assumption's distribution, drawn inside its card
 preview_plot <- function(s) {
@@ -972,6 +1205,15 @@ CITE_BIBTEX <- sprintf("@software{strand_pvec,\n  author  = {Strand, Jackson R.}
                        CITE_YEAR, APP_VERSION, CITE_URL)
 
 # Shown on the results tabs until the first run; hidden by CSS once results exist
+# "Used for" chips under a source: each jumps to the assumption card (or tab) the source supports
+src_uses <- function(cards = character(), tabs = character())
+  div(class = "src-uses", span("Used for: "),
+      lapply(cards, function(id) tags$button(type = "button", class = "src-link", `data-card` = id, labels[[id]])),
+      lapply(names(tabs), function(t) tags$button(type = "button", class = "src-link", `data-tab` = tabs[[t]], t)))
+
+MIN_TRIALS <- 10
+MAX_TRIALS <- 50000
+
 empty_state <- function(msg)
   div(class = "empty-state",
       div(class = "empty-title", "No results yet"),
@@ -1002,43 +1244,79 @@ ui <- fluidPage(
         tags$button(id = "collapse_sidebar", type = "button", class = "sidebar-arrow",
                     title = "Hide settings", `aria-label` = "Hide settings", `aria-expanded` = "true",
                     icon("chevron-left"))),
-      selectInput("mort_model", "Mortality model",
-                  c("Logistic" = "logistic", "Gompertz" = "gompertz", "Exponential" = "exponential")),
-      selectInput("structure", "Population age structure",
-                  c("Stable age distribution" = "stable", "Synchronous emergence" = "synchronous")),
+      radioButtons("mort_model",
+        span("Mortality model ",
+          span(class = "help-tip", tabindex = "0", role = "note", `aria-label` = "About the mortality model", "?",
+            span(class = "help-tip-text",
+              "How a mosquito's daily chance of dying changes as it ages.",
+              br(), br(),
+              strong("Logistic: "), "risk rises with age, then levels off at old ages (uses a, b and s).",
+              br(), br(),
+              strong("Gompertz: "), "risk keeps rising steadily with age, with no levelling off (uses a and b).",
+              br(), br(),
+              strong("Exponential: "), "the same risk every day, whatever the age (uses a only)."))),
+        c("Logistic" = "logistic", "Gompertz" = "gompertz", "Exponential" = "exponential")),
+      radioButtons("structure",
+        span("Population age structure ",
+          span(class = "help-tip", tabindex = "0", role = "note", `aria-label` = "About population age structure", "?",
+            span(class = "help-tip-text",
+              strong("Stable: "), "the population has settled into a steady mix of ages (0 to 199 days). Only mosquitoes old enough to have taken a first bite contribute to Ct.",
+              br(), br(),
+              strong("Synchronous: "), "all mosquitoes hatch together as one cohort, and Ct averages the daily capacity over ages 3 to 6 days."))),
+        c("Stable" = "stable", "Synchronous" = "synchronous")),
       fluidRow(
-        column(6, selectInput("n_iter", "Trials",
-                              c("500" = 500, "1,000" = 1000, "5,000" = 5000, "10,000 (slow)" = 10000), 1000)),
+        column(6, div(class = "trials-box", textInput("n_iter", "Trials", "1,000"))),
         column(6, numericInput("seed", HTML(paste0("Seed ", as.character(actionLink("rand_seed", icon("shuffle"), title = "Pick a random seed")))), 1))),
-      radioButtons("preset", "Load a preset",
+      tags$details(class = "temp-section",
+        tags$summary(span(class = "temp-name", "Temperature"), span(class = "temp-optional", "optional"), uiOutput("temp_badge", inline = TRUE)),
+        div(class = "temp-body",
+          radioButtons("temp_curve", "Vector and pathogen",
+                       choiceNames = list("Generic (editable)", tagList(tags$i("Aedes aegypti"), " \u00b7 dengue virus"),
+                                          tagList(tags$i("Anopheles"), " \u00b7 ", tags$i("P. falciparum"))),
+                       choiceValues = c("generic", "aedes_dengue", "anopheles_pf"), selected = "generic"),
+          sliderInput("temp_delta", "Change in temperature (\u00b0C)", min = -8, max = 8, value = 0, step = 0.5, width = "100%", ticks = FALSE),
+          uiOutput("temp_effect"),
+          tags$details(class = "fit-help temp-sens",
+            tags$summary("Baseline and settings"),
+            conditionalPanel("input.temp_curve != 'generic'",
+              numericInput("temp_ref", "Baseline temperature (\u00b0C)", 27, step = 0.5, width = "100%"),
+              p(class = "temp-note", "The temperature your assumptions describe. The slider moves away from it.")),
+            conditionalPanel("input.temp_curve == 'generic'",
+              numericInput("temp_pe", "Incubation period (% per \u00b0C)", -10, step = 1, width = "100%"),
+              numericInput("temp_pm", "Initial mortality a (% per \u00b0C)", 5, step = 1, width = "100%"),
+              numericInput("temp_pa", "Biting rate (% per \u00b0C)", 3, step = 1, width = "100%"),
+              p(class = "temp-note", "Rough placeholders, not fitted curves. Pick a vector and pathogen above to use published curves."))))),
+      radioButtons("preset",
+        span("Load a preset ",
+          span(class = "help-tip", tabindex = "0", role = "note", `aria-label` = "About the presets", "?",
+            span(class = "help-tip-text",
+              strong("Literature: "), "each assumption is drawn from a probability distribution whose range comes from published estimates. Biting rate and vector competence use Beta, incubation period and mosquito density use Uniform, and the mortality parameters use truncated Normal. Results vary from trial to trial, so the forecast shows a distribution of Ct.",
+              br(), br(),
+              strong("Fixed: "), "every assumption is a single value, so every trial gives the same Ct. Use it as a deterministic baseline to see how much the uncertainty changes the result. You can still change any distribution by hand."))),
         choices = c("Literature" = "lit",
                     "Fixed" = "fixed"),
         selected = "lit"),
-      # Both descriptions sit in one box whose height follows the chosen one (see pvec.js), so switching
+      # Both short descriptions sit in one box whose height follows the chosen one (see pvec.js), so switching
       # presets fades the text and eases the controls below up or down instead of snapping
       div(class = "preset-stack", id = "preset_stack",
         div(class = "preset-pane on", `data-preset` = "lit",
           p(class = "preset-desc",
-          HTML(paste0(
-            "Each assumption is drawn from a probability distribution whose range comes from ",
-            "published estimates (see ", as.character(actionLink("goto_about", "About")), "). ",
-            "Biting rate and vector competence use Beta, incubation period and mosquito density ",
-            "use Uniform, and the mortality parameters use truncated Normal. Results vary from ",
-            "trial to trial, so the forecast shows a distribution of Ct.")))),
+          HTML(paste0("Ranges from published estimates (", as.character(actionLink("goto_about", "see Presets")), ").")))),
         div(class = "preset-pane", `data-preset` = "fixed",
-          p(class = "preset-desc",
-          "Every assumption is set to a single value, so every trial gives the same Ct. Use",
-          "this as a deterministic baseline to see how much the uncertainty changes the result.",
-          "You can still change any distribution by hand."))),
+          p(class = "preset-desc", "One value per assumption: a baseline with no spread."))),
       div(class = "preset-vary", role = "status", `aria-live` = "polite", id = "preset_vary"),
-      div(class = "preset-reset", actionLink("reset_preset", "Reset all values to this preset")),
-      div(class = "start-over", actionLink("start_over", "Start over (defaults, clear run history)"))
+      actionButton("reset_open", tagList(icon("rotate-left"), " Reset..."), class = "btn-default btn-sm reset-open", width = "100%")
      ),
      div(class = "run-dock",
         actionButton("run", "Run simulation", class = "btn-primary btn-lg", width = "100%",
                      title = "Shortcut: Cmd or Ctrl + Enter"),
         uiOutput("stale_note"),
-        div(class = "run-status", textOutput("run_status")))
+        div(class = "run-status", textOutput("run_status"))),
+     div(class = "history-box",
+        div(class = "history-title-row", icon("clock-rotate-left"), span(class = "history-title", " Past runs")),
+        div(class = "history-sub", "Click a run to reload its settings.",
+            tags$button(type = "button", class = "scen-clear", "Clear all")),
+        uiOutput("scenario_list"))
     ),
     mainPanel(width = 9,
       tabsetPanel(id = "tabs",
@@ -1053,14 +1331,14 @@ ui <- fluidPage(
               span(class = "jump-sep", "|"),
               tags$button(type = "button", id = "collapse_all", class = "link-btn", "Collapse all"))),
           div(class = "howto", id = "howto",
-            div(class = "howto-title", "Getting started"),
+            div(class = "howto-head",
+              div(class = "howto-title", "Getting started"),
+              tags$button(type = "button", id = "tour_start", class = "btn btn-default btn-sm tour-btn", icon("compass"), " Take a 1-minute tour")),
             div(class = "howto-steps",
               howto_step(1, "Choose assumptions", "Pick a preset in Simulation settings, or open the cards below to edit them."),
               howto_step(2, "Set up the run", "Choose the mortality model, number of trials and a seed."),
               howto_step(3, "Run and read", "Click ", strong("Run simulation"), " (or press ",
                          tags$kbd("Cmd/Ctrl + Enter"), "), then open the Forecast tab.")),
-            div(class = "howto-note", span(class = "legend-dot"),
-                "A purple dot on a tab means it has new results you have not looked at yet."),
             tags$button(type = "button", class = "howto-close", `aria-label` = "Hide getting started", title = "Hide getting started",
                         span(class = "x", HTML("&times;")), span(class = "lbl", "Hide"))),
           tags$button(type = "button", id = "howto_open", class = "link-btn howto-open",
@@ -1081,18 +1359,19 @@ ui <- fluidPage(
             span(class = "lg-up", "Uses uploaded draws"))),
           div(class = "assump-section", id = "sec_transmission",
             h4("Transmission", span(class = "sec-count")),
-            p(class = "sec-desc", "Biting rate, incubation period, mosquito density and vector competence."),
+            p(class = "sec-desc", "The inputs that set how readily a mosquito population can spread infection."),
             div(class = "cards-grid", lapply(names(vc_specs), function(id) assumption_ui(id, vc_specs[[id]])))),
           div(class = "assump-section", id = "sec_mortality",
             h4("Mortality schedule", span(class = "sec-count")),
-            p(class = "sec-desc", "How fast mosquitoes die with age. The cards shown depend on the mortality model."),
+            p(class = "sec-desc", "How quickly mosquitoes die as they age. The cards shown depend on the mortality model."),
+            uiOutput("ab_hint"),
             div(class = "cards-grid",
               assumption_ui("mort_a", mort_specs$logistic$mort_a),
               conditionalPanel("input.mort_model != 'exponential'", assumption_ui("mort_b", mort_specs$logistic$mort_b)),
               conditionalPanel("input.mort_model == 'logistic'", assumption_ui("mort_s", mort_specs$logistic$mort_s)))),
           div(class = "assump-section", id = "sec_population",
             h4("Population age structure", span(class = "sec-count")),
-            p(class = "sec-desc", "Growth rate and age at first bite. Not used with synchronous emergence."),
+            p(class = "sec-desc", "The age mix of the mosquito population. Used only with the stable age distribution."),
             div(class = "cards-grid",
               assumption_ui("growth_r", pop_specs$growth_r),
               assumption_ui("first_bite", pop_specs$first_bite))),
@@ -1123,32 +1402,62 @@ ui <- fluidPage(
         tabPanel("Forecast",
           empty_state("Run a simulation to see the forecast of Ct, the chance it exceeds a threshold, and the summary statistics."),
           div(class = "results-body",
+          uiOutput("ctx_forecast"),
+          uiOutput("insight_forecast"),
           uiOutput("forecast_summary"),
-          div(class = "no-print",
-            selectInput("compare_run", "Compare with an earlier run",
-                        c("None (current run only)" = "none"), width = "420px")),
-          uiOutput("overlay_note"),
-          uiOutput("compare_table"),
+          how_to("How to read this chart",
+            p("Each bar counts how many trials gave a Ct in that range. The dashed line is the median. Dark bars fall inside",
+              "the certainty range you set (all bars when none is set). Type a threshold, or click the chart to place one,",
+              "to see the chance that Ct exceeds it. More bins show finer detail but a noisier shape.")),
           div(class = "plot-card",
             div(class = "plot-controls no-print",
-              numericInput("cert_lo", "Certainty range, lower", NA, step = 0.1, width = "170px"),
-              numericInput("cert_hi", "Certainty range, upper", NA, step = 0.1, width = "170px"),
-              numericInput("thresh", "Chance Ct exceeds", NA, step = 0.1, width = "170px")),
+              numericInput("cert_lo", "Range from", NA, step = 0.1, width = "150px"),
+              numericInput("cert_hi", "Range to", NA, step = 0.1, width = "150px"),
+              numericInput("thresh", "Threshold", NA, step = 0.1, width = "150px"),
+              sliderInput("bins", "Bins", 10, 100, 50, step = 5, width = "170px", ticks = FALSE)),
             uiOutput("cert_text"),
-            plotOutput("forecast_plot", height = 400),
+            plotOutput("forecast_plot", height = 400, click = "forecast_click"),
             div(class = "dl-row",
-              dl_png("forecast_plot", "forecast_Ct.png"),
-              downloadButton("dl_csv", "Download results (CSV)", class = "btn-sm"),
-              downloadButton("dl_report", "Download report (HTML)", class = "btn-sm"))),
+              dl_menu(dl_img_item("forecast_plot", "forecast_Ct.png"),
+                      tags$li(downloadLink("dl_csv", "Results (CSV)")),
+                      tags$li(downloadLink("dl_report", "Report (HTML)"))))),
+          div(class = "tools no-print",
+            div(class = "tools-head", span(class = "tools-title", "Dig deeper"), span(class = "tools-sub", "More views of this forecast. Pick one to open it.")),
+            div(class = "tool-tabs", role = "group", `aria-label` = "More views of this forecast",
+              tool_tab("extreme", "arrow-up-wide-short", "Most extreme trials"),
+              tool_tab("r0", "calculator", "Convert to R\u2080"),
+              tool_tab("struct", "layer-group", "Other age structure"),
+              tool_tab("compare", "code-compare", "Compare to another run")),
+            div(class = "tool-panels",
+              tool_panel("extreme", "Most extreme trials",
+                p(class = "tab-lead", "The five trials with the highest Ct, with every input's value and where it sits among that assumption's draws."),
+                uiOutput("extreme_ui")),
+              tool_panel("r0", "Convert Ct to R\u2080 (optional)",
+                p(class = "tab-lead", "R\u2080 here is the number of new human infections one infectious person causes through mosquitoes: Ct \u00d7 the chance an infectious bite infects a person \u00d7 the days a person is infectious. These two numbers are extra assumptions, not part of the model."),
+                div(class = "plot-controls",
+                  numericInput("r0_b", "Chance an infectious bite infects a person (0 to 1)", NA, min = 0, max = 1, step = 0.05, width = "230px"),
+                  numericInput("r0_dur", "Days a person is infectious", NA, min = 0, step = 1, width = "190px")),
+                uiOutput("r0_ui")),
+              tool_panel("struct", "Run the same draws on the other age structure",
+                p(class = "tab-lead", "Runs the same parameter draws through the other population age structure, so the difference you see is the structure alone."),
+                actionButton("struct_go", "Run the other age structure", class = "btn-default btn-sm"),
+                uiOutput("struct_out")),
+              tool_panel("compare", "Compare to another run",
+                p(class = "tab-lead", "Pick any two of your runs, not only the latest. The first is drawn in blue and the second in orange."),
+                div(class = "plot-controls",
+                  selectInput("compare_a", "Run", choices = NULL, width = "360px"),
+                  selectInput("compare_run", "Compare it with", c("Choose a run" = "none"), width = "360px")),
+                uiOutput("compare_out")))),
           div(class = "table-tools", copy_btn("stats")),
           div(class = "stats-table", tableOutput("stats")))),
         tabPanel("Sensitivity",
           empty_state("Run a simulation to see which assumptions move Ct the most."),
           div(class = "results-body",
-          p(class = "tab-lead", "Which assumptions move Ct the most? Blue bars raise Ct and orange bars lower it."),
+          uiOutput("ctx_sens"),
+          uiOutput("insight_sens"),
+          p(class = "tab-lead", "Which assumptions move Ct the most? Blue bars raise Ct and orange bars lower it. Click a driver, or a bar, to see Ct plotted against that assumption."),
           uiOutput("sens_top"),
-          tags$details(class = "how-to-read",
-            tags$summary("How to read this chart"),
+          how_to("How to read this chart",
             p("The default, the partial rank correlation coefficient (PRCC), is the rank correlation between one",
               "assumption and Ct after removing the effect of all the others, from -1 to 1, with a 95% interval.",
               "Assumptions that are fixed do not vary and are left out. If you have linked assumptions or uploaded",
@@ -1157,29 +1466,35 @@ ui <- fluidPage(
           div(class = "plot-card",
             div(class = "no-print seg-wrap",
               radioButtons("sens_metric", NULL, inline = TRUE, selected = "prcc",
-                           c("PRCC" = "prcc", "Rank correlation" = "rho", "Share of squared correlation" = "contrib"))),
-            plotOutput("sens_plot", height = 400),
-            div(class = "dl-row", dl_png("sens_plot", "sensitivity.png"))))),
+                           c("PRCC" = "prcc", "Rank correlation" = "rho", "Share of squared correlation" = "contrib", "Share of variance" = "var"))),
+            uiOutput("sens_caption"),
+            plotOutput("sens_plot", height = 400, click = "sens_click"),
+            div(class = "dl-row", dl_menu(dl_img_item("sens_plot", "sensitivity.png")))))),
         tabPanel("Assumption draws",
           empty_state("Run a simulation to see the values drawn for each assumption."),
           div(class = "results-body",
+          uiOutput("ctx_draws"),
+          uiOutput("insight_draws"),
           p(class = "tab-lead", "The values each assumption took across all trials. Click any card to enlarge it."),
           div(class = "draws-toolbar no-print",
               div(class = "seg-js", role = "group", `aria-label` = "Show assumptions",
                   tags$button(type = "button", class = "on", `data-filter` = "all", "All"),
                   tags$button(type = "button", `data-filter` = "vary", "Varying"),
                   tags$button(type = "button", `data-filter` = "fixed", "Fixed")),
+              div(class = "seg-sort", role = "group", `aria-label` = "Order",
+                  tags$button(type = "button", class = "on", `data-sort` = "default", "Default order"),
+                  tags$button(type = "button", `data-sort` = "effect", "Strongest effect first")),
               span(class = "draws-count", role = "status", `aria-live` = "polite"),
-              tags$button(type = "button", class = "btn btn-default btn-sm dl-grid", `data-target` = "draws_grid",
-                          `data-file` = "assumption_draws.png", icon("download"), " Download shown (PNG)")),
+              dl_menu(dl_img_item("draws_grid", "assumption_draws.png", "Shown plots (PNG)", cls = "dl-grid"))),
           uiOutput("draws_grid"))),
         tabPanel("Survival curves",
           empty_state("Run a simulation to see survivorship and mortality curves for the first 100 trials."),
           div(class = "results-body",
-          p(class = "tab-lead", "How long mosquitoes live under each trial's mortality assumptions. Each faint line is one trial."),
+          uiOutput("ctx_surv"),
+          uiOutput("insight_surv"),
+          p(class = "tab-lead", "How long mosquitoes live under each trial's mortality assumptions. Each faint line is one trial. Hover a line to see that trial's values."),
           uiOutput("surv_tiles"),
-          tags$details(class = "how-to-read",
-            tags$summary("How to read these charts"),
+          how_to("How to read these charts",
             p("Survivorship is the fraction of mosquitoes still alive at each age. The daily mortality hazard is the chance",
               "that a mosquito of that age dies that day. The dark line is the median across the first 100 trials, and the",
               "dotted line marks the median extrinsic incubation period: a mosquito must live past it to transmit.")),
@@ -1187,8 +1502,22 @@ ui <- fluidPage(
             div(class = "no-print seg-wrap",
               radioButtons("surv_view", NULL, inline = TRUE, selected = "both",
                            c("Both" = "both", "Survivorship" = "surv", "Hazard" = "hazard"))),
-            plotOutput("surv_plot", height = 450),
-            div(class = "dl-row", dl_png("surv_plot", "survival_curves.png"))))),
+            div(class = "plot-controls no-print",
+              selectInput("surv_n", "Lines shown", c("10" = 10, "25" = 25, "50" = 50, "100 (all)" = 100), 100, width = "140px"),
+              sliderInput("surv_age", "Ages shown (days)", 10, 150, 80, step = 10, width = "220px", ticks = FALSE)),
+            div(class = "surv-wrap", id = "surv_wrap",
+              conditionalPanel("input.surv_view != 'hazard'", class = "combine-img surv-cell",
+                plotOutput("surv_plot_s", height = 450, hover = hoverOpts("surv_hover_s", delay = 120, delayType = "debounce")),
+                uiOutput("surv_tip_s")),
+              conditionalPanel("input.surv_view != 'surv'", class = "combine-img surv-cell",
+                plotOutput("surv_plot_h", height = 450, hover = hoverOpts("surv_hover_h", delay = 120, delayType = "debounce")),
+                uiOutput("surv_tip_h"))),
+            div(class = "dl-row", dl_menu(dl_img_item("surv_wrap", "survival_curves.png", cls = "dl-grid")))),
+          div(class = "plot-card",
+            h4(class = "mc-head", "How much does lifespan vary between trials?"),
+            p(class = "tab-lead", "Each trial has its own median lifespan, the age when half its mosquitoes have died. The spread shows how much the mortality assumptions matter."),
+            plotOutput("surv_life_plot", height = 340),
+            div(class = "dl-row", dl_menu(dl_img_item("surv_life_plot", "median_lifespan.png")))))),
         tabPanel("Model check",
           h4(class = "mc-head", "Check against published values"),
           p(class = "tab-lead", "The deterministic model is run at the parameter values Styer et al. (2007) report and compared with their published vectorial capacity."),
@@ -1209,6 +1538,7 @@ ui <- fluidPage(
               "values are rounded to one decimal place, so small differences are expected.")),
           div(class = "table-tools", copy_btn("validation")),
           div(class = "clean-table", style = "overflow-x: auto;", tableOutput("validation")),
+          div(class = "mc-legend", span(class = "mc-pass", "\u2713 within 1%"), span(class = "mc-warn", "~ within 5%"), span(class = "mc-fail", "\u2717 5% or more")),
           h4(class = "mc-head", "Comparison for the paper"),
           p(class = "tab-lead", "Published, deterministic and two probabilistic runs side by side, for each mortality model and age structure."),
           tags$details(class = "how-to-read",
@@ -1238,9 +1568,25 @@ ui <- fluidPage(
         tabPanel("About",
           div(class = "about",
           div(class = "jump-bar", role = "navigation", `aria-label` = "Jump to a section",
-            jump_chip("about_what", "Overview"), jump_chip("about_model", "Model"),
+            jump_chip("about_quick", "In one minute"), jump_chip("about_cite", "Cite"),
+            jump_chip("about_what", "Overview"), jump_chip("about_model", "Model"), jump_chip("about_presets", "Presets"),
             jump_chip("about_methods", "Methods"), jump_chip("about_sources", "Sources"),
             jump_chip("about_author", "Author")),
+          div(class = "about-card about-section about-callout", id = "about_quick",
+            h4("In one minute"),
+            tags$ul(class = "quick-list",
+              tags$li(strong("What it is. "), "A simulator that shows how uncertain mosquito and transmission inputs spread into uncertainty in vectorial capacity (Ct)."),
+              tags$li(HTML("<strong>How to use it.</strong> Pick a preset or edit the assumptions, press <strong>Run simulation</strong>, then read the Forecast tab.")),
+              tags$li(strong("What you get. "), "A distribution of Ct, which inputs drive it, the values drawn, and how long the mosquitoes live."),
+              tags$li(strong("What to trust. "), "The Model check tab reproduces Styer et al. (2007) within about 0.5%. The default distributions come from the literature, not from field data for one place."))),
+          div(class = "about-card about-section about-callout cite-card", id = "about_cite",
+            h4("How to cite"),
+            p(class = "cite-text", CITE_TEXT),
+            div(class = "cite-actions",
+              tags$button(type = "button", class = "btn btn-default btn-sm fade-btn cite-btn", `data-cite` = CITE_TEXT,
+                          span(class = "fb-a", icon("quote-right"), " Copy citation"), span(class = "fb-b", `aria-live` = "polite")),
+              tags$button(type = "button", class = "btn btn-default btn-sm fade-btn cite-btn", `data-cite` = CITE_BIBTEX,
+                          span(class = "fb-a", icon("file-lines"), " Copy BibTeX"), span(class = "fb-b", `aria-live` = "polite")))),
           div(class = "about-card about-section", id = "about_what",
           h4("What this tool does"),
           p(class = "about-lead", "PVEC (Probabilistic VECtorial capacity) propagates uncertainty in transmission and mosquito mortality parameters",
@@ -1300,6 +1646,18 @@ ui <- fluidPage(
           P(class = "eq-note", "The forecast is the distribution of ", v("C"), sub_("t,i"), ". The incubation period ", v("n"),
             " is rounded to a whole day between 1 and 150. Setting every assumption to Fixed gives the deterministic model that the Model check tab compares with Styer et al. (2007). ",
             "Sensitivity is the partial rank correlation of each input with ", v("C"), sub_("t"), ".")))))),
+          div(class = "about-card about-section", id = "about_presets",
+            h4("Presets"),
+            p("A preset sets every assumption at once. Pick one in the side panel, then change any assumption by hand."),
+            tags$ul(
+              tags$li(strong("Literature. "), "Each assumption is drawn from a probability distribution whose range comes from published estimates, as described in the accompanying paper. ",
+                      "Biting rate and vector competence use Beta distributions, incubation period and mosquito density use Uniform, and the mortality parameters use truncated Normal distributions. ",
+                      "The growth rate and the age at first bite have no published range, so they stay fixed. Results vary from trial to trial, so the forecast shows a distribution of Ct."),
+              tags$li(strong("Fixed. "), "Every assumption is set to a single value, so every trial gives the same Ct. This is the deterministic model that the Model check tab compares with Styer et al. (2007), ",
+                      "and a baseline for seeing how much the uncertainty changes the result. The mortality values are the ones fitted by Styer et al. for the chosen mortality model, and the growth rate is solved so the exponential, stable-age case matches their published Ct.")),
+            how_to("Show every assumption's values",
+              p(class = "preset-table-lead", "The values below are for the logistic mortality model; the exponential and Gompertz models use their own fitted mortality values."),
+              div(class = "clean-table preset-table", style = "overflow-x: auto;", HTML(html_table(preset_table()))))),
           div(class = "about-card about-section", id = "about_methods",
           h4("Methods notes"),
           tags$ul(
@@ -1319,19 +1677,18 @@ ui <- fluidPage(
           h4("Sources"),
           tags$ol(class = "about-refs",
             tags$li("Macdonald G (1957) The Epidemiology and Control of Malaria. Oxford University Press. ",
-                    tags$a(href = "https://archive.org/details/in.ernet.dli.2015.549644/page/n11/mode/2up", target = "_blank", "Internet Archive")),
+                    tags$a(href = "https://archive.org/details/in.ernet.dli.2015.549644/page/n11/mode/2up", target = "_blank", "Internet Archive"),
+                    src_uses(c("a_bite", "m_dens", "vec_comp", "n_eip"))),
             tags$li("Garrett-Jones C (1964) Prognosis for interruption of malaria transmission through assessment of the mosquito's vectorial capacity. Nature 204:1173-1175. ",
-                    tags$a(href = "https://doi.org/10.1038/2041173a0", target = "_blank", "https://doi.org/10.1038/2041173a0")),
+                    tags$a(href = "https://doi.org/10.1038/2041173a0", target = "_blank", "https://doi.org/10.1038/2041173a0"),
+                    src_uses(c("a_bite", "m_dens", "vec_comp", "n_eip"))),
             tags$li("Styer LM, Carey JR, Wang J-L, Scott TW (2007) Mosquitoes do senesce: departure from the paradigm of constant mortality. Am J Trop Med Hyg 76:111-117. ",
-                    tags$a(href = "https://doi.org/10.4269/ajtmh.2007.76.111", target = "_blank", "https://doi.org/10.4269/ajtmh.2007.76.111"))),
+                    tags$a(href = "https://doi.org/10.4269/ajtmh.2007.76.111", target = "_blank", "https://doi.org/10.4269/ajtmh.2007.76.111"),
+                    src_uses(c("mort_a", "mort_b", "mort_s", "growth_r"), c("Model check" = "Model check")))),
           p("Parameter ranges and distributions are from the literature as described in the",
             "accompanying paper.")),
           div(class = "cite-row",
-            span(class = "app-meta", paste0("Version ", APP_VERSION, ", last updated ", LAST_UPDATED)),
-            tags$button(type = "button", class = "btn btn-default btn-sm fade-btn cite-btn", `data-cite` = CITE_TEXT,
-                        span(class = "fb-a", icon("quote-right"), " Copy citation"), span(class = "fb-b", `aria-live` = "polite")),
-            tags$button(type = "button", class = "btn btn-default btn-sm fade-btn cite-btn", `data-cite` = CITE_BIBTEX,
-                        span(class = "fb-a", icon("file-lines"), " Copy BibTeX"), span(class = "fb-b", `aria-live` = "polite"))),
+            span(class = "app-meta", paste0("Version ", APP_VERSION, ", last updated ", LAST_UPDATED))),
           div(class = "author-card about-section", id = "about_author",
             img(src = "headshot.jpg", alt = "Jackson Strand", class = "author-photo"),
             div(class = "author-text",
@@ -1484,10 +1841,17 @@ server <- function(input, output, session) {
     get1 <- function(k) if (k %in% names(v)) v[[k]] else NA_character_
     num  <- function(k) suppressWarnings(as.numeric(get1(k)))
     if (get1("structure") %in% c("stable", "synchronous"))
-      updateSelectInput(session, "structure", selected = get1("structure"))
+      updateRadioButtons(session, "structure", selected = get1("structure"))
     if (!is.na(num("seed")))  updateNumericInput(session, "seed", value = num("seed"))
-    if (get1("trials") %in% c("500", "1000", "5000", "10000"))
-      updateSelectInput(session, "n_iter", selected = get1("trials"))
+    tr <- suppressWarnings(as.numeric(gsub(",", "", get1("trials"))))
+    if (!is.na(tr) && tr >= MIN_TRIALS && tr <= MAX_TRIALS)
+      updateTextInput(session, "n_iter", value = format(round(tr), big.mark = ","))
+    # Temperature what-if (absent in older files and links, which means no change)
+    cv <- get1("temp.curve"); updateRadioButtons(session, "temp_curve", selected = if (!is.na(cv) && cv %in% c("generic", names(TEMP_CURVES))) cv else "generic")
+    if (!is.na(num("temp.ref"))) updateNumericInput(session, "temp_ref", value = num("temp.ref"))
+    td <- num("temp"); updateSliderInput(session, "temp_delta", value = if (is.na(td)) 0 else max(-8, min(8, td)))
+    for (k in list(c("temp.pe", "temp_pe", -10), c("temp.pm", "temp_pm", 5), c("temp.pa", "temp_pa", 3)))
+      updateNumericInput(session, k[2], value = if (is.na(num(k[1]))) as.numeric(k[3]) else num(k[1]))
     for (id in setting_ids) {
       src <- get1(paste0(id, ".source"))
       if (!is.na(src)) updateTextInput(session, paste0(id, "_source"), value = src)
@@ -1513,27 +1877,34 @@ server <- function(input, output, session) {
       }
   }
 
+  # Every setting as one named character vector (the same keys as the settings file)
+  settings_rows <- function() {
+    rows <- list(model = input$mort_model, structure = input$structure,
+                 trials = n_trials(), seed = input$seed,
+                 temp = input$temp_delta, temp.curve = input$temp_curve, temp.ref = input$temp_ref,
+                 temp.pe = input$temp_pe, temp.pm = input$temp_pm, temp.pa = input$temp_pa)
+    cp <- corr_pairs()
+    for (i in seq_len(nrow(cp))) rows[[paste0("corr.", i)]] <- sprintf("%s;%s;%s", cp$a[i], cp$b[i], cp$rho[i])
+    for (id in setting_ids) {
+      sp <- get_spec(id)
+      rows[[paste0(id, ".dist")]] <- sp$dist
+      rows[[paste0(id, ".source")]] <- input[[paste0(id, "_source")]]
+      for (f in fields) rows[[paste0(id, ".", f)]] <- sp[[f]]
+    }
+    vapply(rows, function(x) if (is.null(x) || length(x) != 1 || is.na(x)) "" else as.character(x), "")
+  }
+
   output$dl_settings <- downloadHandler(
     filename = function() "vectorial_capacity_settings.csv",
     content  = function(file) {
-      rows <- list(model = input$mort_model, structure = input$structure,
-                   trials = input$n_iter, seed = input$seed)
-      cp <- corr_pairs()
-      for (i in seq_len(nrow(cp))) rows[[paste0("corr.", i)]] <- sprintf("%s;%s;%s", cp$a[i], cp$b[i], cp$rho[i])
-      for (id in setting_ids) {
-        sp <- get_spec(id)
-        rows[[paste0(id, ".dist")]] <- sp$dist
-        rows[[paste0(id, ".source")]] <- input[[paste0(id, "_source")]]
-        for (f in fields) rows[[paste0(id, ".", f)]] <- sp[[f]]
-      }
+      rows <- settings_rows()
       writeLines("# Settings saved from PVEC, the Probabilistic Vectorial Capacity Simulator. Use Upload inputs to restore them.", file)
-      write.table(data.frame(setting = names(rows),
-                             value = vapply(rows, function(x) if (is.null(x) || is.na(x)) "" else as.character(x), "")),
+      write.table(data.frame(setting = names(rows), value = unname(rows)),
                   file, append = TRUE, sep = ",", row.names = FALSE, qmethod = "double")
     })
 
   # Apply a named character vector of settings (from a file or from a link)
-  apply_loaded <- function(v, what) {
+  apply_loaded <- function(v, what, quiet = FALSE) {
     ok <- !is.null(v) && all(c("model", "structure") %in% names(v)) &&
           v[["model"]] %in% c("logistic", "gompertz", "exponential")
     if (!ok) {
@@ -1543,9 +1914,9 @@ server <- function(input, output, session) {
     }
     if (!identical(v[["model"]], input$mort_model)) {
       loaded(v)
-      updateSelectInput(session, "mort_model", selected = v[["model"]])
+      updateRadioButtons(session, "mort_model", selected = v[["model"]])
     } else apply_cfg(v)
-    showNotification("Settings loaded. Click Run to use them.", type = "message", duration = 6)
+    if (!quiet) showNotification("Settings loaded. Click Run to use them.", type = "message", duration = 6)
   }
 
   observeEvent(input$load_settings, {
@@ -1564,6 +1935,18 @@ server <- function(input, output, session) {
   })
 
   # Start over: confirm, then restart the app from its defaults (clears runs, history and any link settings)
+  # Reset opens a pop-up with the two choices
+  observeEvent(input$reset_open, {
+    showModal(modalDialog(
+      title = "Reset", size = "s", easyClose = TRUE, footer = modalButton("Cancel"),
+      actionButton("reset_preset", tagList(div(class = "ro-title", "Reset values to this preset"),
+                                           div(class = "ro-desc", "Sets every assumption and the number of trials back to the preset's values.")),
+                   class = "reset-option"),
+      actionButton("start_over", tagList(div(class = "ro-title", "Start over"),
+                                         div(class = "ro-desc", "Restores all defaults and clears the run history.")),
+                   class = "reset-option")))
+  })
+
   observeEvent(input$start_over, {
     showModal(modalDialog(
       title = "Start over?", size = "s", easyClose = TRUE,
@@ -1599,7 +1982,7 @@ server <- function(input, output, session) {
     if (!is.null(loaded())) { apply_cfg(loaded()); loaded(NULL) }
   }, ignoreInit = TRUE)
 
-  observeEvent(input$goto_about, updateTabsetPanel(session, "tabs", selected = "About"))
+  observeEvent(input$goto_about, session$sendCustomMessage("gotoAbout", list(target = "about_presets")))
 
   apply_preset <- function(preset) {
     all <- c(vc_specs, mort_specs[[input$mort_model]], pop_specs)
@@ -1610,7 +1993,12 @@ server <- function(input, output, session) {
     }
   }
   observeEvent(input$preset, apply_preset(input$preset), ignoreInit = TRUE)
-  observeEvent(input$reset_preset, apply_preset(input$preset))
+  observeEvent(input$reset_preset, {
+    removeModal()
+    apply_preset(input$preset)
+    updateTextInput(session, "n_iter", value = "1,000")
+    updateSliderInput(session, "temp_delta", value = 0)
+  })
 
   # The preset's own spec for one assumption (what "unedited" means)
   preset_spec <- function(id, model = input$mort_model, preset = input$preset) {
@@ -1660,11 +2048,18 @@ server <- function(input, output, session) {
     }, ignoreInit = TRUE)
   })
 
+  # The number of trials as typed (NA when empty or outside the allowed range)
+  n_trials <- reactive({
+    n <- suppressWarnings(as.numeric(gsub("[, ]", "", input$n_iter)))
+    if (length(n) != 1 || is.na(n) || n < MIN_TRIALS || n > MAX_TRIALS) NA_integer_ else as.integer(round(n))
+  })
+
   # Snapshot of everything that feeds a run, to tell when results are out of date
   cur_sig_now <- reactive({
     ids <- active_ids(input$mort_model)
     list(model = input$mort_model, structure = input$structure,
-         n = input$n_iter, seed = input$seed, corr = corr_pairs(), upload = uploaded()$sig,
+         n = n_trials(), seed = input$seed, corr = corr_pairs(), upload = uploaded()$sig,
+         temp = list(input$temp_delta, input$temp_curve, input$temp_ref, input$temp_pe, input$temp_pm, input$temp_pa),
          specs = lapply(setNames(ids, ids), get_spec))
   })
   # The warning waits for a pause in typing. A run records the exact current snapshot, not the delayed one.
@@ -1695,6 +2090,8 @@ server <- function(input, output, session) {
     specs <- lapply(ids, get_spec)
     names(specs) <- ids
     problems <- unlist(Map(check_spec, specs, labels[ids]))
+    if (is.na(n_trials()))
+      problems <- c(problems, sprintf("Enter a number of trials between %s and %s", MIN_TRIALS, format(MAX_TRIALS, big.mark = ",")))
     if (!is.null(problems)) {
       showNotification(paste(problems, collapse = ". "), type = "error", duration = 8)
       session$sendCustomMessage("scrollToError", list())
@@ -1702,10 +2099,14 @@ server <- function(input, output, session) {
     }
 
     t0 <- Sys.time()
-    n  <- as.integer(input$n_iter)
+    snap <- settings_rows()
+    n  <- n_trials()
+    dT <- if (is.null(input$temp_delta) || is.na(input$temp_delta)) 0 else input$temp_delta
+    tadj <- temperature_adjust(input$temp_curve, input$temp_ref, dT, input$temp_pe, input$temp_pm, input$temp_pa)
+    adj <- if (!is.null(tadj)) tadj$mult
     run <- withProgress(message = "Running trials", value = 0,
       run_model(model, input$structure, specs, n, input$seed, pairs = corr_pairs(), uploaded = uploaded(),
-                progress = function(i, n) setProgress(i / n, detail = sprintf("%d of %d", i, n))))
+                progress = function(i, n) setProgress(i / n, detail = sprintf("%d of %d", i, n)), adjust = adj))
     d <- run$draws; ct <- run$ct; b_i <- run$b; s_i <- run$s
 
     settings <- c(
@@ -1715,6 +2116,9 @@ server <- function(input, output, session) {
       sprintf("Population age structure: %s", input$structure),
       sprintf("Trials: %d", n),
       sprintf("Random seed: %s", input$seed),
+      if (!is.null(adj)) sprintf("Temperature what-if: %+g degrees C%s (incubation period x%.2f, initial mortality a x%.2f, biting rate x%.2f)",
+                                 dT, if (input$temp_curve %in% names(TEMP_CURVES)) sprintf(" from %s C, %s", format(input$temp_ref), TEMP_CURVES[[input$temp_curve]]$label) else "",
+                                 adj[["n_eip"]], adj[["mort_a"]], adj[["a_bite"]]),
       unlist(Map(function(s, l, id) {
         src <- trimws(paste(input[[paste0(id, "_source")]], collapse = ""))
         sprintf("%s: %s, %s%s", l, s$dist, describe_spec(s), if (nzchar(src)) sprintf(" [Source: %s]", src) else "")
@@ -1725,12 +2129,13 @@ server <- function(input, output, session) {
       run$notes)
 
     new_run <- run_count() + 1
-    entry <- list(run = new_run, ct = ct,
+    entry <- list(run = new_run, ct = ct, snap = snap,
                   label = sprintf("Run %d: %s, %s, %s trials, median Ct %s", new_run, model,
                                   input$structure, format(n, big.mark = ","), signif(median(ct), 3)))
-    history(c(tail(history(), 9), list(entry)))
+    history(c(tail(history(), 39), list(entry)))
     results_val(list(ct = ct, draws = d, model = model, b = b_i, s = s_i,
-                     settings = settings, run = new_run))
+                     settings = settings, run = new_run,
+                     structure = input$structure, n = n, seed = input$seed, snapshot = snap, temp = dT))
     run_sig(cur_sig_now())
     run_specs(specs)
     run_count(run_count() + 1)
@@ -1740,13 +2145,340 @@ server <- function(input, output, session) {
                     run_count(), format(Sys.time(), "%I:%M:%S %p"),
                     format(n, big.mark = ","), secs)
     run_info(msg)
+    scen_id(scen_id() + 1)
+    q3 <- quantile(ct, c(0.025, 0.5, 0.975), names = FALSE)
+    scenarios(tail(c(scenarios(), list(list(id = scen_id(), run = new_run, name = sprintf("Run %d", new_run), time = format(Sys.time(), "%I:%M %p"),
+                                            snap = snap, n = n, med = q3[2], lo = q3[1], hi = q3[3], model = model, structure = input$structure))), 40))
     session$sendCustomMessage("newResults", list())
 
-    # Skip the pop up for the automatic run when the app first opens
-    if (input$run > 0) {
-      showNotification(msg, type = "message", duration = 5)
-    }
   }, ignoreNULL = FALSE)
+
+  # ---- Suggest linking mortality a and b, which are usually estimated together ----
+  ab_dismissed <- reactiveVal(FALSE)
+  ab_pair <- function(cp) any((cp$a == "mort_a" & cp$b == "mort_b") | (cp$a == "mort_b" & cp$b == "mort_a"))
+  output$ab_hint <- renderUI({
+    if (ab_dismissed() || identical(input$mort_model, "exponential")) return(NULL)
+    va <- input$mort_a_dist; vb <- input$mort_b_dist
+    if (is.null(va) || is.null(vb) || va == "Fixed" || vb == "Fixed" || ab_pair(corr_pairs())) return(NULL)
+    div(class = "hint-card", role = "note",
+        span(class = "hint-icon", `aria-hidden` = "true", icon("link")),
+        div(class = "hint-body",
+            p(strong("Mortality a and b are drawn independently."), " They are usually estimated from the same data, and in published fits they tend to move in opposite directions: ",
+              "a higher starting hazard goes with a slower rate of ageing. Drawing them independently can make the forecast look wider or narrower than the data support."),
+            div(class = "hint-actions",
+                actionButton("ab_link", "Link them (\u03c1 = \u22120.5)", class = "btn-default btn-sm"),
+                actionButton("ab_dismiss", "Not now", class = "btn-link btn-sm"),
+                span(class = "hint-small", "\u22120.5 is a moderate starting point. You can edit it under Linking assumptions."))))
+  })
+  observeEvent(input$ab_link, {
+    cp <- corr_pairs()
+    corr_pairs(rbind(cp, data.frame(a = "mort_a", b = "mort_b", rho = -0.5, stringsAsFactors = FALSE)))
+    showNotification("Linked mortality a and b (\u03c1 = \u22120.5). Click Run to use it.", type = "message", duration = 6)
+  })
+  observeEvent(input$ab_dismiss, ab_dismissed(TRUE))
+
+  # ---- Temperature what-if: the badge on the section header and the size of the effect ----
+  observeEvent(input$temp_curve, {
+    if (input$temp_curve %in% names(TEMP_CURVES)) updateNumericInput(session, "temp_ref", value = TEMP_CURVES[[input$temp_curve]]$ref)
+  }, ignoreInit = TRUE)
+  temp_adj <- reactive(temperature_adjust(input$temp_curve, input$temp_ref, input$temp_delta, input$temp_pe, input$temp_pm, input$temp_pa))
+  output$temp_badge <- renderUI({
+    d <- input$temp_delta
+    if (!is.null(d) && !is.na(d) && d != 0) span(class = "temp-badge", sprintf("%+g \u00b0C", d))
+  })
+  output$temp_effect <- renderUI({
+    cv <- input$temp_curve; a <- temp_adj()
+    cite <- if (identical(cv, "aedes_dengue")) p(class = "temp-note", HTML("Curves from Liu-Helmersson et al. (2014, <i>PLoS ONE</i> 9:e89783), fitted to laboratory data for <i>Aedes aegypti</i> and dengue virus."))
+            else if (identical(cv, "anopheles_pf")) p(class = "temp-note", HTML("Mortality after Martens (1997) and parasite development as 111 degree-days above 16 \u00b0C (Detinova; Macdonald 1957), for <i>Anopheles</i> and <i>Plasmodium falciparum</i>. The biting rate is left unchanged."))
+            else p(class = "temp-note", "Shifts the incubation period, the initial mortality hazard (a) and the biting rate of every trial together.")
+    if (is.null(a)) return(cite)
+    m <- a$mult
+    tagList(
+      p(class = "temp-effect", sprintf("Incubation period \u00d7%.2f, initial mortality a \u00d7%.2f, biting rate \u00d7%.2f%s", m[["n_eip"]], m[["mort_a"]], m[["a_bite"]],
+                                      if (cv %in% names(TEMP_CURVES)) sprintf(", from %s \u00b0C", format(input$temp_ref)) else "")),
+      if (length(a$outside)) p(class = "temp-note temp-warn", sprintf("%s beyond the temperature range the published equation was fitted over, so %s held at the edge of that range.",
+                                                                    paste(c(n = "The incubation period", mu = "Mortality", a = "The biting rate")[a$outside], collapse = " and "),
+                                                                    if (length(a$outside) > 1) "they are" else "it is")),
+      cite)
+  })
+
+  # ---- Past runs: every run is kept with its settings, so it can be renamed and reloaded ----
+  scenarios <- reactiveVal(list())
+  scen_id   <- reactiveVal(0)
+  observeEvent(input$scenario_load, {
+    sc <- Filter(function(x) x$id == input$scenario_load, scenarios())
+    if (length(sc)) apply_loaded(sc[[1]]$snap, "run")
+  })
+  # The compare icon on a past run opens "Compare to another run" with that run chosen; either run can be changed there
+  observeEvent(input$scenario_compare, {
+    sc <- Filter(function(x) x$id == input$scenario_compare, scenarios())
+    if (!length(sc)) return()
+    if (!as.character(sc[[1]]$run) %in% vapply(history(), function(e) as.character(e$run), "")) {
+      showNotification("That run is too old to compare.", type = "warning"); return()
+    }
+    cmp_a(NULL); cmp_b(as.character(sc[[1]]$run))
+    session$sendCustomMessage("openCompare", list())
+  })
+  # Reload a past run's settings and run them straight away (the page waits for the settings to settle, then presses Run)
+  observeEvent(input$scenario_run, {
+    sc <- Filter(function(x) x$id == input$scenario_run, scenarios())
+    if (!length(sc)) return()
+    apply_loaded(sc[[1]]$snap, "run", quiet = TRUE)
+    session$sendCustomMessage("runSoon", list())
+  })
+  observeEvent(input$scenario_del, {
+    sc <- Filter(function(x) x$id == input$scenario_del, scenarios())
+    if (!length(sc)) return()
+    run <- sc[[1]]$run
+    scenarios(Filter(function(x) x$id != input$scenario_del, scenarios()))
+    history(Filter(function(e) e$run != run, history()))
+  })
+  observeEvent(input$scenario_clear, {
+    n <- length(scenarios()); req(n > 0)
+    showModal(modalDialog(title = "Clear past runs?", size = "s", easyClose = TRUE,
+      sprintf("This removes all %d past run%s from the list. The results on screen stay.", n, if (n == 1) "" else "s"),
+      footer = tagList(modalButton("Cancel"), actionButton("confirm_clear_runs", "Clear all", class = "btn-primary"))))
+  })
+  observeEvent(input$confirm_clear_runs, { scenarios(list()); history(list()); removeModal() })
+  observeEvent(input$scenario_rename, {
+    r <- input$scenario_rename; id <- as.integer(r$id); nm <- substr(trimws(r$name), 1, 40)
+    scenarios(lapply(scenarios(), function(x) { if (x$id == id) x$name <- if (nzchar(nm)) nm else sprintf("Run %d", x$run); x }))
+  })
+  cur_snap <- debounce(reactive(settings_rows()), 500)
+  output$scenario_list <- renderUI({
+    sc <- rev(scenarios())
+    if (!length(sc)) return(div(class = "scen-empty", "No runs yet."))
+    newest <- sc[[1]]$id
+    cs <- cur_snap()
+    same_as_now <- function(x) !is.null(cs) && !is.null(x$snap) && nrow(snap_diff(cs, x$snap)) == 0
+    item <- function(x)
+      tags$li(class = "scen-item", `data-id` = x$id, tabindex = 0, role = "button", title = "Click to reload this run's settings",
+              div(class = "scen-top", span(class = "scen-name", x$name),
+                  span(class = "scen-tools",
+                       tags$button(type = "button", class = "scen-run", `aria-label` = "Reload these settings and run", title = "Reload these settings and run now", icon("play")),
+                       if (x$id != newest) tags$button(type = "button", class = "scen-cmp", `aria-label` = "Compare this run with another",
+                                                       title = "Compare this run with another", icon("table-columns")),
+                       tags$button(type = "button", class = "scen-edit", `aria-label` = "Rename this run", title = "Rename", icon("pen")),
+                       tags$button(type = "button", class = "scen-del", `aria-label` = "Remove this run from the list", title = "Remove from the list", icon("xmark")))),
+              if (x$id == newest || same_as_now(x))
+                div(class = "scen-tags",
+                    if (x$id == newest) span(class = "scen-tag showing", title = "The results on screen come from this run", "Showing"),
+                    if (same_as_now(x)) span(class = "scen-tag same", title = "The settings on screen match this run", "Current settings")),
+              div(class = "scen-sub", sprintf("%s \u00b7 %s \u00b7 %s trials \u00b7 %s", tools::toTitleCase(x$model),
+                                              if (identical(x$structure, "synchronous")) "synchronous" else "stable", format(x$n, big.mark = ","), x$time)),
+              div(class = "scen-sub", sprintf("Median Ct %s (95%%: %s\u2013%s)", fmt3(x$med), fmt3(x$lo), fmt3(x$hi))))
+    top  <- head(sc, 1); rest <- tail(sc, -1)
+    tagList(tags$ul(class = "scen-list", lapply(top, item)),
+            if (length(rest)) tagList(
+              tags$button(type = "button", class = "scen-more", `aria-expanded` = "false",
+                          `data-show` = sprintf("Show %d earlier run%s", length(rest), if (length(rest) == 1) "" else "s"),
+                          `data-hide` = "Hide earlier runs"),
+              div(class = "scen-rest-wrap", div(class = "scen-rest-in", tags$ul(class = "scen-list scen-rest", lapply(rest, item))))))
+  })
+
+  # "Run N, model, structure, trials" line at the top of each results tab, with a warning when the settings have moved on
+  run_context_ui <- function() renderUI({
+    res <- results()
+    stale <- !is.null(run_sig()) && !identical(cur_sig(), run_sig())
+    div(class = "run-context no-print",
+        span(class = "rc-main", sprintf("Run %d \u00b7 %s mortality \u00b7 %s age structure \u00b7 %s trials \u00b7 seed %s%s",
+                                       res$run, tools::toTitleCase(res$model),
+                                       if (identical(res$structure, "synchronous")) "synchronous" else "stable",
+                                       format(res$n, big.mark = ","), res$seed,
+                                       if (!is.null(res$temp) && res$temp != 0) sprintf(" \u00b7 %+g \u00b0C", res$temp) else "")),
+        if (stale) span(class = "rc-stale", role = "status", "\u26a0 Settings changed since this run. ",
+                        tags$a(href = "#", class = "rc-rerun", "Re-run")))
+  })
+  for (tab in c("forecast", "sens", "draws", "surv")) output[[paste0("ctx_", tab)]] <- run_context_ui()
+
+  # Clicking the forecast chart places the threshold there
+  observeEvent(input$forecast_click, {
+    x <- input$forecast_click$x
+    if (!is.null(x) && is.finite(x)) updateNumericInput(session, "thresh", value = signif(x, 3))
+  })
+
+  # ---- "What this says": a short plain-language reading of each results tab ----
+  # The sentence is built as one HTML string, so no stray spaces appear before punctuation
+  insight_box <- function(...) div(class = "insight no-print",
+    tags$button(type = "button", class = "insight-head", `aria-expanded` = "false",
+                span(class = "insight-icon", `aria-hidden` = "true", icon("lightbulb")),
+                span(class = "insight-title", "Quick summary"),
+                span(class = "insight-hint", `aria-hidden` = "true"),
+                span(class = "insight-chev", `aria-hidden` = "true")),
+    div(class = "insight-body",
+        div(class = "insight-body-in",
+            p(HTML(paste0(..., collapse = ""))),
+            p(class = "insight-note", "This summary is generated automatically, so please excuse any mistakes or errors. The data below is always the better summary."))))
+  insight_text <- function(...) paste0(..., collapse = "")
+  B   <- function(x) sprintf("<strong>%s</strong>", htmltools::htmlEscape(as.character(x)))
+  pct <- function(x) sprintf("%.0f%%", 100 * x)
+
+  # These boxes interpret the numbers shown in the tiles and charts around them; they do not repeat them
+  tail_res <- reactive(tail_info(results()))
+
+  # R0 settings: valid only when both numbers are given
+  r0_pars <- reactive({
+    b <- input$r0_b; D <- input$r0_dur
+    if (is.null(b) || is.null(D) || is.na(b) || is.na(D) || b <= 0 || b > 1 || D <= 0) NULL else c(b = b, D = D)
+  })
+  output$r0_ui <- renderUI({
+    pr <- r0_pars()
+    if (is.null(pr)) return(helpText("Enter both numbers to see R\u2080."))
+    r0 <- results()$ct * pr[["b"]] * pr[["D"]]; q <- quantile(r0, c(0.025, 0.5, 0.975))
+    tagList(
+      p(HTML(sprintf("R\u2080 = Ct \u00d7 %s \u00d7 %s. The median R\u2080 is <strong>%s</strong> (95%% of trials fall between %s and %s), and <strong>%s</strong> of trials have R\u2080 above 1.",
+                     format(pr[["b"]]), format(pr[["D"]]), fmt3(q[2]), fmt3(q[1]), fmt3(q[3]), sprintf("%.0f%%", 100 * mean(r0 > 1))))),
+      actionButton("r0_mark", "Mark R\u2080 = 1 on the forecast chart", class = "btn-default btn-sm"),
+      helpText(sprintf("R\u2080 = 1 is where Ct equals %s. Some authors report the square root of this quantity.", signif(1 / (pr[["b"]] * pr[["D"]]), 3))))
+  })
+  observeEvent(input$r0_mark, {
+    pr <- r0_pars(); req(pr)
+    updateNumericInput(session, "thresh", value = signif(1 / (pr[["b"]] * pr[["D"]]), 3))
+  })
+
+  # The most extreme trials and what put them there
+  output$extreme_ui <- renderUI({
+    res <- results(); ti <- tail_res()
+    if (is.null(ti)) return(helpText("This needs at least 100 trials with some assumptions varying."))
+    d <- res$draws; fl <- function(p) if (p <= 0.05) "lo" else if (p >= 0.95) "hi" else ""
+    head_row <- tags$tr(tags$th("Trial"), tags$th("Ct"), lapply(ti$varied, function(v) tags$th(labels[[v]])))
+    rows <- lapply(ti$top5, function(i)
+      tags$tr(tags$td(i), tags$td(class = "ex-ct", fmt3(res$ct[i])),
+              lapply(ti$varied, function(v) { p <- ti$pct[[v]][i]
+                tags$td(class = paste("ex-cell", fl(p)), fmt3(d[[v]][i]), span(class = "ex-pct", paste0(ordinal(p), " pct"))) })))
+    strong <- ti$drivers[ti$drivers$ext >= 0.6, ]
+    why <- if (nrow(strong))
+      sprintf("The highest 1%% of trials mostly come from %s.",
+              paste(sprintf("%s values of %s (median at the %s percentile of its draws)", ifelse(strong$med < 0.5, "low", "high"),
+                            labels[strong$id], vapply(strong$med, ordinal, "")), collapse = ", and "))
+    else "No single assumption puts the highest trials in the tail; they come from combinations of inputs."
+    tagList(
+      p(class = "tab-lead", why, if (ti$heavy) sprintf(" The 99th percentile of Ct is %s times the median, which is a heavy tail.", fmt3(ti$ratio))),
+      div(style = "overflow-x:auto;", tags$table(class = "extreme-table", tags$thead(head_row), tags$tbody(rows))),
+      helpText("The grey figure under each value is where it sits among all of that assumption's draws (1st is the lowest). Orange marks the lowest and highest 5%."))
+  })
+
+  # Compare the two population age structures on the same draws
+  struct_res <- reactiveVal(NULL)
+  observeEvent(results(), struct_res(NULL), ignoreInit = TRUE)
+  observeEvent(input$struct_go, {
+    res <- results()
+    ct2 <- withProgress(message = "Running the other age structure", value = 0,
+      ct_other_structure(res, res$structure, progress = function(i, n) setProgress(i / n)))
+    struct_res(list(ct2 = ct2, from = res$structure, run = res$run))
+  })
+  output$struct_out <- renderUI({
+    sr <- struct_res(); req(sr)
+    tagList(
+      if (identical(sr$from, "synchronous"))
+        helpText(sprintf("The stable age distribution also needs a growth rate and a first-bite age, which this run did not use, so the defaults were used (r = %s, first bite at %s days).",
+                         format(pop_specs$growth_r$value), format(pop_specs$first_bite$value))),
+      plotOutput("struct_plot", height = 300),
+      uiOutput("struct_table"))
+  })
+  output$struct_plot <- renderPlot({
+    sr <- struct_res(); req(sr); res <- results()
+    nm <- if (identical(sr$from, "stable")) c("Stable (this run)", "Synchronous (same draws)") else c("Synchronous (this run)", "Stable (same draws)")
+    draw_forecast(res$ct, c(-Inf, Inf), sr$ct2, nm, NA, bins = 50)
+  }, alt = "Histograms of Ct for the two population age structures, using the same draws.")
+  output$struct_table <- renderUI({
+    sr <- struct_res(); req(sr); res <- results()
+    nm <- if (identical(sr$from, "stable")) c("Stable (this run)", "Synchronous (same draws)") else c("Synchronous (this run)", "Stable (same draws)")
+    f <- function(x) c(fmt3(median(x)), fmt3(mean(x)), fmt3(quantile(x, 0.025)), fmt3(quantile(x, 0.975)))
+    df <- data.frame(Structure = nm, rbind(f(res$ct), f(sr$ct2)), stringsAsFactors = FALSE)
+    names(df) <- c("Age structure", "Median", "Mean", "2.5th percentile", "97.5th percentile")
+    ratio <- if (identical(sr$from, "stable")) median(sr$ct2) / median(res$ct) else median(res$ct) / median(sr$ct2)
+    tagList(div(class = "compare-table", HTML(html_table(df))),
+            p(class = "tab-lead", sprintf("The median Ct under synchronous emergence is %s times the median under the stable age distribution for these draws.", fmt3(ratio))))
+  })
+
+  txt_forecast <- reactive({
+    ct <- results()$ct
+    if (diff(range(ct)) == 0)
+      return(insight_text("Every trial gives the same Ct, because every assumption is fixed. Let at least one assumption vary to see how uncertainty spreads into the result."))
+    q <- quantile(ct, c(0.025, 0.5, 0.975)); width <- if (q[1] > 0) q[3] / q[1] else Inf
+    spread <- if (width < 1.5) "The forecast is tightly bounded, so the inputs leave little uncertainty about Ct."
+              else if (width < 3) "The forecast has a moderate spread, so Ct is reasonably, but not tightly, pinned down."
+              else if (is.finite(width)) sprintf("The forecast is wide: the high end is about %s times the low end, so the inputs leave a lot of uncertainty about Ct and a single number would hide it.", fmt3(width))
+              else "The forecast is wide, so the inputs leave a lot of uncertainty about Ct."
+    skew <- if (mean(ct) > 1.5 * q[2]) " A long tail of very high trials pulls the mean well above the median, so the median is the better \"typical\" value."
+            else if (mean(ct) > 1.1 * q[2]) " A few high trials pull the mean above the median, so the median is the better \"typical\" value."
+            else if (mean(ct) < 0.9 * q[2]) " A few low trials pull the mean below the median, so the median is the better \"typical\" value."
+            else " The mean and median agree, so the distribution is fairly balanced."
+    sc <- sens_res()
+    drv <- if (!is.null(sc)) sprintf(" The assumption most strongly tied to Ct is %s (see the Sensitivity tab).", B(labels[[sc$prcc$id[which.max(abs(sc$prcc$est))]]]))
+    ti <- tail_res()
+    tailwarn <- if (!is.null(ti) && ti$heavy) {
+      st <- ti$drivers[ti$drivers$ext >= 0.6, ]
+      if (nrow(st)) sprintf(" Heavy tail: the highest 1%% of trials mostly come from %s, which is what stretches the high end (see Most extreme trials below).",
+                            paste(sprintf("%s values of %s", ifelse(st$med < 0.5, "low", "high"), B(labels[st$id])), collapse = " and "))
+      else " Heavy tail: the highest trials come from combinations of inputs rather than one input (see Most extreme trials below)."
+    }
+    pr <- r0_pars()
+    r0s <- if (!is.null(pr)) sprintf(" With your R\u2080 settings, %s of trials have R\u2080 above 1.", B(sprintf("%.0f%%", 100 * mean(ct * pr[["b"]] * pr[["D"]] > 1))))
+    insight_text(spread, skew, drv, tailwarn, r0s)
+  })
+  output$insight_forecast <- renderUI(insight_box(txt_forecast()))
+
+  txt_sens <- reactive({
+    sc <- sens_res()
+    if (is.null(sc)) return(insight_text("No assumptions are varying, so there is nothing to rank. Let some assumptions vary on the Define assumptions tab."))
+    pr <- sc$prcc[order(-abs(sc$prcc$est)), ]; k <- nrow(pr)
+    if (k < 3) return(insight_text(B(labels[[pr$id[1]]]), " is the main driver of Ct. Let more assumptions vary to see how they compare."))
+    vs  <- sc$vari; ord <- names(vs)[order(-vs)]; top <- head(ord, 3)
+    share <- sum(vs[top]); total <- sum(vs)
+    weak <- if (k >= 5 && total - share <= 10) sprintf(" The other %d explain little on their own.", k - 3)
+    togeth <- if (total < 85) sprintf(" Together all the assumptions explain about %.0f%% of the variance by themselves; the rest comes from assumptions acting together, so changing several at once matters.", total)
+    insight_text(sprintf("Three of the %d varying assumptions explain about %.0f%% of the variance in Ct by themselves, so better data on ", k, share),
+                B(labels[[top[1]]]), " and ", B(labels[[top[2]]]), " would narrow the forecast the most.", weak, togeth,
+                " The bars show how strongly Ct moves with each assumption, not how uncertain the assumption is.")
+  })
+  output$insight_sens <- renderUI(insight_box(txt_sens()))
+
+  txt_draws <- reactive({
+    d <- results()$draws; fixed <- vapply(d, function(x) diff(range(x)) == 0, NA)
+    vary <- names(d)[!fixed]; nf <- sum(fixed)
+    if (!length(vary)) return(insight_text("All ", length(d), " assumptions are fixed, so every trial used the same values and there is no uncertainty to spread."))
+    rel <- vapply(vary, function(id) { q <- quantile(d[[id]], c(0.025, 0.5, 0.975)); if (q[2] == 0) NA_real_ else (q[3] - q[1]) / abs(q[2]) }, 0)
+    rel <- rel[!is.na(rel)]
+    sc <- sens_res()
+    strongest <- if (!is.null(sc)) sc$prcc$id[which.max(abs(sc$prcc$est))]
+    widest <- if (length(rel)) names(which.max(rel))
+    fixed_names <- if (nf) paste(labels[names(d)[fixed]], collapse = ", ")
+    mismatch <- if (!is.null(strongest) && !is.null(widest) && widest != strongest)
+      sprintf(" The widest input, %s, is not the strongest driver of Ct, %s, so how much an input varies does not by itself show how much it matters.", B(labels[[widest]]), B(labels[[strongest]]))
+    else if (!is.null(strongest) && !is.null(widest))
+      sprintf(" %s is both the widest input and the strongest driver of Ct, so it is where better data would help most.", B(labels[[strongest]]))
+    insight_text(B(length(vary)), " of ", length(d), " assumptions vary across trials",
+                if (nf) sprintf("; the other %d (%s) %s fixed and add no uncertainty", nf, fixed_names, if (nf == 1) "is" else "are"), ".", mismatch)
+  })
+  output$insight_draws <- renderUI(insight_box(txt_draws()))
+
+  txt_surv <- reactive({
+    res <- results(); lts <- surv_lts(); k <- seq_along(lts)
+    ls <- surv_life(); ls <- ls[!is.na(ls)]
+    alive <- median(vapply(k, function(i) lts[[i]]$lx[res$draws$n_eip[i] + 1], 0)); ne <- median(res$draws$n_eip[k])
+    verdict <- if (alive >= 0.9) sprintf("Nearly all mosquitoes outlive the %s-day incubation period, so survival is rarely what limits transmission here.", fmt3(ne))
+               else if (alive >= 0.5) sprintf("A sizeable share of mosquitoes die within the %s-day incubation period, so survival limits transmission to some extent.", fmt3(ne))
+               else sprintf("Most mosquitoes die within the %s-day incubation period, so survival strongly limits transmission.", fmt3(ne))
+    vary <- if (length(ls) > 1 && diff(range(ls)) > 0) {
+      q <- quantile(ls, c(0.025, 0.5, 0.975)); r <- (q[3] - q[1]) / q[2]
+      sprintf(" Lifespan differs between trials by about %s days (95%% of trials), which is a %s spread, so the mortality assumptions %s for the result.",
+              fmt3(q[3] - q[1]), if (r < 0.25) "narrow" else if (r < 0.6) "moderate" else "wide",
+              if (r < 0.25) "matter little" else if (r < 0.6) "matter moderately" else "matter a lot")
+    }
+    insight_text(verdict, vary)
+  })
+  output$insight_surv <- renderUI(insight_box(txt_surv()))
+
+  # Each new run fills the range boxes: "from" is always 0, "to" is the largest result rounded up so every trial is inside
+  floor_sig <- function(x, d = 3) { if (x == 0) return(0); k <- 10^(d - 1 - floor(log10(abs(x)))); floor(x * k) / k }
+  ceil_sig  <- function(x, d = 3) { if (x == 0) return(0); k <- 10^(d - 1 - floor(log10(abs(x)))); ceiling(x * k) / k }
+  observeEvent(results_val(), {
+    ct <- results_val()$ct
+    updateNumericInput(session, "cert_lo", value = 0)
+    updateNumericInput(session, "cert_hi", value = ceil_sig(max(ct)))
+  })
 
   cert_bounds <- reactive(c(
     if (is.na(input$cert_lo)) -Inf else input$cert_lo,
@@ -1758,14 +2490,16 @@ server <- function(input, output, session) {
     th <- input$thresh
     parts <- list()
     if (!all(is.infinite(b)))
-      parts <- c(parts, list(h4(sprintf("Certainty is %.1f%% that Ct falls in this range",
-                                        100 * mean(ct >= b[1] & ct <= b[2])))))
+      parts <- c(parts, list(p(HTML(sprintf("<strong>%.1f%%</strong> chance that Ct falls in the range %s to %s",
+                                        100 * mean(ct >= b[1] & ct <= b[2]),
+                                        if (is.infinite(b[1])) "below" else format(b[1]),
+                                        if (is.infinite(b[2])) "above" else format(b[2]))))))
     if (!is.na(th))
-      parts <- c(parts, list(h4(sprintf("Chance that Ct exceeds %s is %.1f%%",
-                                        format(th), 100 * mean(ct > th)))))
+      parts <- c(parts, list(p(HTML(sprintf("<strong>%.1f%%</strong> chance that Ct exceeds %s",
+                                        100 * mean(ct > th), format(th))))))
     if (!length(parts))
-      return(helpText("Enter a lower and/or upper limit, or a threshold, to see the probability."))
-    tagList(parts)
+      return(helpText("Optional: enter a range (from / to) or a threshold, or click the chart to place a threshold, to see the probability of Ct landing there."))
+    div(class = "cert-readout", role = "status", `aria-live` = "polite", tagList(parts))
   })
 
   output$forecast_summary <- renderUI({
@@ -1790,53 +2524,80 @@ server <- function(input, output, session) {
       p(class = "forecast-note", st$precision))
   })
 
-  # Offer the earlier runs in the "Compare" menu, keeping the current choice if it still exists
-  observeEvent(history(), {
-    h      <- history()
-    others <- rev(h[-length(h)])
-    choices <- c("None (current run only)" = "none",
-                 setNames(vapply(others, function(e) as.character(e$run), ""),
-                          vapply(others, function(e) e$label, "")))
-    sel <- isolate(input$compare_run)
-    if (is.null(sel) || !sel %in% choices) sel <- "none"
-    updateSelectInput(session, "compare_run", choices = choices, selected = sel)
+  # ---- Compare to another run: any two of the saved runs ----
+  cmp_a <- reactiveVal(NULL)       # NULL follows the latest run
+  cmp_b <- reactiveVal("none")
+  latest_run <- reactive({ sc <- scenarios(); if (length(sc)) as.character(sc[[length(sc)]]$run) })
+  run_name <- function(e) {
+    sc <- Filter(function(x) x$run == e$run, scenarios())
+    if (length(sc)) sc[[1]]$name else sprintf("Run %d", e$run)
+  }
+  get_run <- function(id) { for (e in history()) if (as.character(e$run) == id) return(e); NULL }
+  run_choices <- function(exclude = NULL) {
+    sc <- Filter(function(x) !(as.character(x$run) %in% exclude), rev(scenarios()))
+    setNames(vapply(sc, function(x) as.character(x$run), ""),
+             vapply(sc, function(x) sprintf("%s (%s, %s trials, median Ct %s)", x$name, tools::toTitleCase(x$model),
+                                            format(x$n, big.mark = ","), fmt3(x$med)), ""))
+  }
+  observeEvent(input$compare_a, cmp_a(if (identical(input$compare_a, latest_run())) NULL else input$compare_a), ignoreInit = TRUE)
+  observeEvent(input$compare_run, cmp_b(input$compare_run), ignoreInit = TRUE)
+  observe({
+    ch <- run_choices(); sel <- cmp_a()
+    if (is.null(sel) || !sel %in% ch) sel <- latest_run()
+    updateSelectInput(session, "compare_a", choices = ch, selected = sel)
   })
-
-  overlay_data <- reactive({
-    id <- input$compare_run
-    if (is.null(id) || id == "none") return(NULL)
-    for (e in history()) if (as.character(e$run) == id) return(e)
-    NULL
+  observe({
+    a  <- cmp_a(); if (is.null(a)) a <- latest_run()
+    ch <- c("Choose a run" = "none", run_choices(exclude = a)); sel <- cmp_b()
+    if (is.null(sel) || !sel %in% ch) sel <- "none"
+    updateSelectInput(session, "compare_run", choices = ch, selected = sel)
   })
+  run_a <- reactive({ id <- cmp_a(); if (is.null(id)) id <- latest_run(); req(id); get_run(id) })
+  run_b <- reactive({ id <- cmp_b(); if (is.null(id) || identical(id, "none")) return(NULL); get_run(id) })
 
-  output$overlay_note <- renderUI({
-    if (length(history()) < 2)
-      helpText("Run again with different settings to compare runs here.")
-    else if (!is.null(overlay_data()))
-      helpText("Bars show each run's share of trials, so runs with different numbers of trials",
-               "can be compared. The certainty range shading is hidden while comparing.")
+  output$compare_out <- renderUI({
+    if (length(history()) < 2) return(helpText("Run again with different settings to have two runs to compare."))
+    if (is.null(run_b())) return(helpText("Choose a run to compare with."))
+    tagList(
+      helpText("Bars show each run's share of trials, so runs with different numbers of trials can be compared."),
+      plotOutput("compare_plot", height = 320),
+      uiOutput("compare_table"),
+      uiOutput("compare_diff"))
+  })
+  output$compare_plot <- renderPlot({
+    a <- run_a(); b <- run_b(); req(a, b)
+    draw_forecast(a$ct, c(-Inf, Inf), b$ct, c(run_name(a), run_name(b)), NA, bins = 50)
+  }, alt = "Histograms of Ct for the two runs being compared, drawn on the same axis.")
+
+  # What differs between the two runs, side by side
+  output$compare_diff <- renderUI({
+    a <- run_a(); b <- run_b(); req(a, b)
+    if (is.null(a$snap) || is.null(b$snap)) return(NULL)
+    df <- snap_diff(a$snap, b$snap)
+    if (!nrow(df)) return(p(class = "tab-lead", "These two runs used the same settings, so any difference comes from chance alone."))
+    names(df) <- c("What differs", run_name(a), run_name(b))
+    tagList(h4(class = "mc-head", "What differs between these runs"),
+            div(class = "compare-table diff-table", HTML(html_table(df))))
   })
 
   output$compare_table <- renderUI({
-    prev <- overlay_data(); req(prev); res <- results()
+    a <- run_a(); b <- run_b(); req(a, b)
     q   <- function(x, p) unname(quantile(x, p))
     row <- function(label, ct) c(label, format(length(ct), big.mark = ","), fmt3(median(ct)), fmt3(mean(ct)),
                                  fmt3(q(ct, 0.025)), fmt3(q(ct, 0.975)))
-    d_med <- median(res$ct) - median(prev$ct); d_mean <- mean(res$ct) - mean(prev$ct)
     sgn <- function(x) paste0(if (x > 0) "+" else "", fmt3(x))
     df <- as.data.frame(rbind(
-      row(sprintf("Run %d (current)", res$run), res$ct),
-      row(sprintf("Run %d", prev$run), prev$ct),
-      c("Difference (current minus other)", "", sgn(d_med), sgn(d_mean), "", "")), stringsAsFactors = FALSE)
+      row(run_name(a), a$ct), row(run_name(b), b$ct),
+      c("Difference (first minus second)", "", sgn(median(a$ct) - median(b$ct)), sgn(mean(a$ct) - mean(b$ct)), "", "")), stringsAsFactors = FALSE)
     names(df) <- c("Run", "Trials", "Median", "Mean", "2.5th percentile", "97.5th percentile")
     tagList(div(class = "compare-table", HTML(html_table(df))),
             div(class = "table-tools", copy_btn("compare_table")))
   })
 
   output$forecast_plot <- renderPlot({
-    res <- results(); prev <- overlay_data()
-    draw_forecast(res$ct, cert_bounds(), prev$ct,
-                  c(sprintf("Run %d (current)", res$run), sprintf("Run %d", prev$run)), input$thresh)
+    res <- results()
+    draw_forecast(res$ct, cert_bounds(), NULL, NULL, input$thresh,
+                  bins = if (is.null(input$bins)) 50 else input$bins)
   }, alt = reactive({
     ct <- results()$ct; st <- summary_text(ct); th <- input$thresh
     base <- if (st$fixed) st$headline
@@ -1892,22 +2653,35 @@ server <- function(input, output, session) {
 
   # The ranking is computed once per run; switching the metric only redraws it
   sens_res <- reactive(sens_contrib(results()))
-  # The three assumptions with the largest partial rank correlation, as tiles
+  # The three assumptions with the largest effect under the chosen measure, as tiles (click one to see its draws)
   output$sens_top <- renderUI({
     sc <- sens_res()
     if (is.null(sc))
       return(div(class = "stat-tiles", div(class = "stat-tile", div(class = "tile-label", "No drivers"),
                  div(class = "tile-sub", "No assumptions are varying, so there is nothing to rank."))))
-    pr <- sc$prcc[order(-abs(sc$prcc$est)), ]
-    pr <- head(pr, 3)
+    m <- input$sens_metric; if (is.null(m)) m <- "prcc"
+    vals <- switch(m, rho = sc$rho, contrib = sc$contrib, var = sc$vari, setNames(sc$prcc$est, sc$prcc$id))
+    top  <- head(vals[order(-abs(vals))], 3)
+    fmt  <- if (identical(m, "contrib")) function(v) sprintf("%+.1f%%", v) else if (identical(m, "var")) function(v) sprintf("%.1f%%", v) else function(v) sprintf("%+.2f", v)
     div(class = "stat-tiles",
-      lapply(seq_len(nrow(pr)), function(i)
-        div(class = paste("stat-tile", if (i == 1) "is-lead"),
+      lapply(seq_along(top), function(i)
+        div(class = paste("stat-tile driver-tile", if (i == 1) "is-lead"), tabindex = 0, role = "button",
+            `data-id` = names(top)[i], title = "Click to see this assumption's drawn values",
             div(class = "tile-label", sprintf("Driver %d", i)),
-            div(class = "tile-name", labels[[pr$id[i]]]),
-            div(class = "tile-value", sprintf("%+.2f", pr$est[i])),
-            div(class = if (pr$est[i] > 0) "tile-sub up" else "tile-sub down",
-                if (pr$est[i] > 0) "\u25b2 raises Ct" else "\u25bc lowers Ct"))))
+            div(class = "tile-name", labels[[names(top)[i]]]),
+            div(class = "tile-value", fmt(top[[i]])),
+            if (identical(m, "var")) div(class = "tile-sub", "of the variance, alone")
+            else div(class = if (top[[i]] > 0) "tile-sub up" else "tile-sub down",
+                     if (top[[i]] > 0) "\u25b2 raises Ct" else "\u25bc lowers Ct"))))
+  })
+
+  output$sens_caption <- renderUI({
+    m <- input$sens_metric; if (is.null(m)) m <- "prcc"
+    p(class = "metric-caption", switch(m,
+      prcc    = "PRCC: the effect of one assumption on Ct after removing the effect of all the others, from -1 to 1.",
+      rho     = "Rank correlation: how closely an assumption and Ct rise and fall together, ignoring the other assumptions, from -1 to 1.",
+      contrib = "Share of squared correlation: each assumption's portion of the total squared rank correlation, in percent.",
+      var     = "Share of variance: the part of the spread in Ct that one assumption explains by itself (its main effect). Shares add up to less than 100% when assumptions act together."))
   })
 
   output$sens_plot <- renderPlot(draw_sens(results(), input$sens_metric, sens_res()), alt = reactive({
@@ -1920,8 +2694,41 @@ server <- function(input, output, session) {
     } else if (identical(m, "rho"))
       sprintf("Bar chart of the rank correlation between each assumption and Ct. Strongest: %s, rho %.2f.",
               labels[[names(sc$rho)[which.max(abs(sc$rho))]]], sc$rho[[which.max(abs(sc$rho))]])
+    else if (identical(m, "var"))
+      sprintf("Bar chart of the share of the variance in Ct that each assumption explains alone. Largest: %s, %.0f%%.",
+              labels[[names(sc$vari)[which.max(sc$vari)]]], max(sc$vari))
     else sprintf("Bar chart of each assumption's share of the squared rank correlation with Ct. Largest: %s, %.0f%%.",
                  labels[[names(sc$contrib)[which.max(abs(sc$contrib))]]], max(abs(sc$contrib)))
+  }))
+
+  # Clicking a sensitivity bar shows Ct against that assumption's drawn values
+  sens_ids <- reactive({
+    sc <- sens_res(); req(sc)
+    m <- input$sens_metric; if (is.null(m)) m <- "prcc"
+    switch(m, rho = names(sort(sc$rho)), contrib = names(sc$contrib), var = names(sc$vari), sc$prcc$id[order(sc$prcc$est)])
+  })
+  sens_sel <- reactiveVal(NULL)
+  show_scatter <- function(id) {
+    req(id %in% names(results()$draws))
+    sens_sel(id)
+    showModal(modalDialog(title = labels[[id]], size = "l", easyClose = TRUE, footer = modalButton("Close"),
+      p(class = "tab-lead", "Each dot is one trial. The orange line is the smoothed trend, so a steep line means this assumption moves Ct a lot."),
+      plotOutput("sens_scatter", height = "440px")))
+  }
+  observeEvent(input$sens_click, {
+    ids <- sens_ids(); y <- input$sens_click$y
+    if (is.null(y) || !length(ids)) return()
+    i <- round((y - 0.7) / 1.2) + 1                      # horizontal bars are centred at 0.7, 1.9, 3.1, ...
+    if (i >= 1 && i <= length(ids)) show_scatter(ids[i])
+  })
+  observeEvent(input$expand_driver, show_scatter(input$expand_driver))
+  output$sens_scatter <- renderPlot({
+    id <- sens_sel(); req(id)
+    res <- results(); req(id %in% names(res$draws))
+    draw_scatter(res$draws[[id]], res$ct, labels[[id]])
+  }, alt = reactive({
+    id <- sens_sel(); req(id)
+    sprintf("Scatter plot of Ct against the drawn values of %s, one dot per trial, with a smoothed trend line.", labels[[id]])
   }))
 
   # One plot output per assumption, shown as tiles that open a larger version when clicked
@@ -1939,17 +2746,23 @@ server <- function(input, output, session) {
 
   output$draws_grid <- renderUI({
     d <- results()$draws
+    sc  <- sens_res()
+    eff <- if (is.null(sc)) numeric(0) else setNames(abs(sc$prcc$est), sc$prcc$id)
     div(class = "draws-grid", id = "draws_grid",
-        lapply(names(d), function(id) {
+        lapply(seq_along(names(d)), function(i) {
+          id <- names(d)[i]
           x <- d[[id]]; fixed <- diff(range(x)) == 0
           q <- quantile(x, c(0.025, 0.5, 0.975))
-          div(class = "draw-tile", tabindex = 0, role = "button", `data-id` = id, `data-fixed` = if (fixed) "1" else "0",
+          e <- if (fixed || !id %in% names(eff) || is.na(eff[[id]])) 0 else eff[[id]]
+          div(class = paste("draw-tile", if (fixed) "is-fixed"), tabindex = 0, role = "button", `data-id` = id,
+              `data-fixed` = if (fixed) "1" else "0", `data-order` = i, `data-effect` = e,
               `aria-label` = paste("Enlarge the plot for", labels[[id]]),
               span(class = "draw-zoom", `aria-hidden` = "true", icon("expand")),
-              plotOutput(paste0("draw_", id), height = "200px"),
+              if (fixed) div(class = "fixed-row", strong(labels[[id]]), span(class = "fixed-val", paste("Fixed at", fmt3(x[1]))))
+              else plotOutput(paste0("draw_", id), height = "200px"),
               div(class = "draw-foot",
                   span(class = "draw-stats",
-                       if (fixed) paste("Every trial uses", fmt3(x[1]))
+                       if (fixed) "Every trial uses this value"
                        else sprintf("Median %s \u00b7 95%% %s\u2013%s", fmt3(q[2]), fmt3(q[1]), fmt3(q[3]))),
                   span(class = paste("draw-badge", if (fixed) "fixed" else "vary"), if (fixed) "Fixed" else "Varies")))
         }))
@@ -1996,22 +2809,78 @@ server <- function(input, output, session) {
       tile("Mortality model", tools::toTitleCase(res$model), "from Simulation settings"))
   })
 
-  output$surv_plot <- renderPlot(draw_surv(results(), input$surv_view, surv_lts()), alt = "Survivorship and daily mortality hazard curves for the first 100 trials, one line per trial.")
+  # Hovering a survival chart picks the nearest trial's line, highlights it and lists that trial's values
+  surv_hl  <- reactiveVal(NULL)
+  surv_pos <- reactiveVal(NULL)
+  observeEvent(c(input$surv_n, input$surv_view, input$surv_age, results()), { surv_hl(NULL); surv_pos(NULL) })
+  surv_hover <- function(h, on_surv) {
+    lts <- surv_lts(); k <- min(as.integer(input$surv_n), length(lts)); xmax <- input$surv_age
+    if (is.null(h) || is.null(h$x) || h$x < 0 || h$x > xmax) { surv_hl(NULL); surv_pos(NULL); return() }
+    a <- min(max(round(h$x), 0), xmax)
+    v <- vapply(lts[seq_len(k)], function(lt) if (on_surv) lt$lx[a + 1] else lt$u[a + 1], 0)
+    span_y <- diff(unlist(h$domain[c("bottom", "top")]))
+    i <- which.min(abs(v - h$y))
+    if (abs(v[i] - h$y) > 0.06 * abs(span_y)) { surv_hl(NULL); surv_pos(NULL) }
+    else { surv_hl(i); surv_pos(list(x = h$coords_css$x, y = h$coords_css$y, age = a, panel = if (on_surv) "s" else "h")) }
+  }
+  # A redraw swaps the image under the mouse, which sends an empty hover; only leaving the chart area (surv_leave) clears the highlight
+  observeEvent(input$surv_hover_s, surv_hover(input$surv_hover_s, TRUE))
+  observeEvent(input$surv_hover_h, surv_hover(input$surv_hover_h, FALSE))
+  observeEvent(input$surv_leave, { surv_hl(NULL); surv_pos(NULL) })
+
+  surv_args <- function(view) draw_surv(results(), view, surv_lts(), k = as.integer(input$surv_n), xmax = input$surv_age, hl = surv_hl())
+  output$surv_plot_s <- renderPlot(surv_args("surv"),
+    alt = "Survivorship curves for the first trials, one line per trial. Hover a line to see that trial's values.")
+  surv_life <- reactive(lifespans(results()))
+  output$surv_life_plot <- renderPlot(draw_lifespans(surv_life()),
+    alt = "Histogram of the median lifespan of each trial's mosquitoes, with the median and the 95 percent range marked.")
+  output$surv_plot_h <- renderPlot(surv_args("hazard"),
+    alt = "Daily mortality hazard curves for the first trials, one line per trial. Hover a line to see that trial's values.")
+
+  surv_tip <- function(panel) renderUI({
+    i <- surv_hl(); pos <- surv_pos(); req(i, pos, identical(pos$panel, panel))
+    res <- results(); d <- res$draws; lt <- surv_lts()[[i]]
+    div(class = "surv-tip", style = sprintf("left:%dpx; top:%dpx;", round(pos$x) + 14, round(pos$y) + 14),
+        strong(sprintf("Trial %d", i)),
+        div(sprintf("Mortality a %s", fmt3(d$mort_a[i]))),
+        if (res$model != "exponential") div(sprintf("Mortality b %s", fmt3(res$b[i]))),
+        if (res$model == "logistic") div(sprintf("Mortality s %s", fmt3(res$s[i]))),
+        div(sprintf("Incubation %s days", fmt3(d$n_eip[i]))),
+        div(sprintf("Alive at day %d: %.0f%%", pos$age, 100 * lt$lx[pos$age + 1])))
+  })
+  output$surv_tip_s <- surv_tip("s")
+  output$surv_tip_h <- surv_tip("h")
+
+  # These links sit inside a closed menu; keep them live so their addresses are ready when the menu opens
+  local({
+    session$onFlushed(function() {
+      outputOptions(output, "dl_csv", suspendWhenHidden = FALSE)
+      outputOptions(output, "dl_report", suspendWhenHidden = FALSE)
+    }, once = TRUE)
+  })
 
   output$dl_report <- downloadHandler(
     filename = function() "vectorial_capacity_report.html",
     content  = function(file) {
-      res <- results(); prev <- overlay_data()
-      writeLines(build_report(res, cert_bounds(), prev,
-                              c(sprintf("Run %d (current)", res$run), sprintf("Run %d", prev$run)), input$thresh), file)
+      res <- results()
+      sm <- list(forecast = tryCatch(txt_forecast(), error = function(e) NULL), sens = tryCatch(txt_sens(), error = function(e) NULL),
+                 draws = tryCatch(txt_draws(), error = function(e) NULL), surv = tryCatch(txt_surv(), error = function(e) NULL))
+      writeLines(build_report(res, cert_bounds(), NULL, NULL, input$thresh, summaries = sm), file)
     })
 
   output$validation <- renderTable({
     v <- validation
     num <- vapply(v, is.numeric, NA)
     v[num] <- lapply(v[num], function(x) { x <- round(x, 2); x[x == 0] <- 0; x })   # no "-0.00"
+    # The two difference columns get a mark: within 1%, within 5%, or further out
+    mark <- function(x) {
+      cls <- ifelse(abs(x) < 1, "mc-pass", ifelse(abs(x) < 5, "mc-warn", "mc-fail"))
+      sym <- ifelse(abs(x) < 1, "\u2713", ifelse(abs(x) < 5, "~", "\u2717"))
+      sprintf("<span class='%s'>%s %.2f</span>", cls, sym, x)
+    }
+    for (cn in c("Sync. diff (%)", "Stable diff (%)")) v[[cn]] <- mark(v[[cn]])
     v
-  }, digits = 2, spacing = "s")
+  }, digits = 2, spacing = "s", sanitize.text.function = function(x) x)
 
   paper_res <- reactiveVal(paper_cached())   # shown as soon as the tab opens; Run comparison reloads or recomputes it
   observeEvent(input$run_paper, {

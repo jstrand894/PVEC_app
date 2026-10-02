@@ -22,37 +22,53 @@ enter leaves your computer. The first load can take 10 to 30 seconds while R sta
 
 ## What you can do
 
-- Choose a mortality model (logistic, Gompertz or exponential) and a population age
-  structure (stable age distribution or synchronous emergence).
-- Set each assumption to a fixed value or a distribution (uniform, triangular, PERT, beta,
-  normal or lognormal), with a live preview of its shape.
-- Start from literature-based distributions or from fixed point estimates.
-- Run 500 to 10,000 trials, compare any of your last ten runs on one plot, and read off
-  ranges, thresholds and the simulation's own precision.
-- Download plots (PNG), per-trial results (CSV), a self-contained HTML report, or your
-  settings (CSV) to reload later. Tables have a copy button that pastes into a spreadsheet.
-- Share a setup with **Share settings**: it copies a link that carries every setting after
-  the `#` in the address, so opening it restores them (it never leaves your browser).
-- See which assumptions you have changed from the preset (an "edited" badge, with a reset
-  link on each card), and switch the Sensitivity plot between share of variance and raw
-  rank correlation.
-- Link assumptions that move together by setting a rank correlation, or upload joint
-  parameter draws (for example posterior samples from a fitted model) so correlations in the
-  data are kept. The growth rate and first-bite age are ordinary assumptions too, so their
-  uncertainty reaches the forecast and the sensitivity ranking.
-- Keep the Define assumptions tab short: assumptions are compact cards (one-line summary and a
-  small preview) that open in place, a jump bar moves between sections, the advanced linking
-  options start folded away, and the Getting started box stays dismissed once you close it.
-- Record where each assumption comes from in its **Source** box (saved in settings files and share
-  links, and printed in the report), and use **Fit from a reported range** to turn a published 95%
-  interval, and mean if given, into the parameters of a uniform, normal, lognormal or beta distribution.
-- Produce the paper comparison on the Model check tab: Styer et al. published values, the deterministic model, and
-  a probabilistic run with every assumption within plus or minus 20% of the same values, as a table and CSV.
-- Read the full model equations (classical formula, age-specific mortality, survivorship, age-specific and
-  total vectorial capacity, and the probabilistic version) on the About tab.
-- Read sensitivity as partial rank correlation coefficients (PRCC) with 95% intervals.
-- Hide the settings panel to give plots the full width. Printing a tab prints just its
-  content.
+**Set up a run**
+- Choose a mortality model (logistic, Gompertz or exponential) and a population age structure (stable age
+  distribution or synchronous emergence). Both are button rows, with a "?" explaining each choice.
+- Set each assumption to a fixed value or a distribution (uniform, triangular, PERT, beta, normal or
+  lognormal), with a live preview of its shape. Assumptions are compact cards that open in place, and a jump bar
+  moves between sections.
+- Start from literature-based distributions or from fixed point estimates, and see which cards you have changed
+  from the preset (with a reset link on each).
+- Record where each assumption comes from in its **Source** box, and use **Fit from a reported range** to turn a
+  published 95% interval (and mean, if given) into the parameters of a distribution.
+- Link assumptions that move together with a rank correlation, or upload joint parameter draws (for example
+  posterior samples from a fitted model). A hint suggests linking mortality *a* and *b*, which are usually
+  estimated from the same data.
+- Run 500 to 50,000 trials (type any number, or step through the usual sizes with the arrows) with a seed.
+- Try a **temperature what-if**: one slider shifts the incubation period, the initial mortality hazard and the
+  biting rate of every trial together. Use published curves for *Aedes aegypti* and dengue virus (Liu-Helmersson
+  et al. 2014) or for *Anopheles* and *Plasmodium falciparum* (Martens 1997 mortality and the 111 degree-day
+  parasite development rule, with the biting rate left unchanged), or set your own percent change per degree.
+
+**Read the results** (each tab opens with a short, automatically generated *Quick summary*; click it to read it)
+- **Forecast:** the distribution of Ct with its median, range and precision; click the chart to place a threshold;
+  a certainty range and a bin control; a look at the **most extreme trials** and what puts them in the tail;
+  an optional conversion to **R&#8320;**; the same draws run through the **other age structure**; and a comparison of any
+  past run with the latest one, with the settings that differ listed side by side.
+- **Sensitivity:** PRCC, rank correlation, share of squared correlation, or **share of variance** (the part of the
+  spread in Ct one assumption explains on its own). Click a driver or a bar to see Ct plotted against that assumption.
+- **Assumption draws:** every assumption's drawn values, filtered, sorted by effect on Ct, and enlarged on click.
+- **Survival curves:** survivorship and hazard for up to 100 trials (hover a line for that trial's values), with a
+  choice of how many lines and ages to show, and the spread of median lifespan across trials.
+- **Model check:** the deterministic model against the values in Styer et al., marked within 1%, within 5% or further,
+  plus the paper comparison table and figure.
+- **About:** a one-minute summary, how to cite, the model equations, methods notes and sources linked to the
+  assumptions they support.
+
+**Keep and share your work**
+- Every run is kept in **Past runs**: the latest is always shown and earlier ones open from an arrow. Click a run to
+  reload its settings, use the play button to reload and run them in one step, the pencil to rename it, the compare
+  icon to compare it with another run, or the cross to remove it. Tags show which run the results come from and which
+  run matches your current settings. The HTML report includes each tab's quick summary and the variance-share chart.
+- Download plots (PNG), per-trial results (CSV), a self-contained HTML report, or your settings (CSV) to reload later.
+  Tables have a copy button that pastes into a spreadsheet.
+- **Share settings** copies a link that carries every setting after the `#` in the address, so opening it restores
+  them. It never leaves your browser.
+- **Reset** can set every value back to the preset, or **Start over** to return to how the page looks on a first visit.
+- A one-minute guided tour is available from the Getting started box. The whole side panel scrolls, a light/dark
+  theme toggle is in the header, and the settings panel can be hidden to give plots the full width. Printing a
+  tab prints just its content.
 
 ## Model and sources
 
@@ -95,16 +111,20 @@ Rscript tests/test_core.R
 
 Checks the age-specific model against the classical closed form and the Styer et al. values,
 that the same seed reproduces a run, that requested correlations are achieved without
-changing any assumption's own distribution, that uploaded draws are used as whole rows, and
-that PRCC matches the textbook formula, that fitting a reported interval returns the same interval, and that the equations written on the About tab,
-implemented literally, reproduce the model. The GitHub workflow runs them before rebuilding the site.
+changing any assumption's own distribution, that uploaded draws are used as whole rows,
+that PRCC matches the textbook formula and the variance share recovers known effects, that
+fitting a reported interval returns the same interval, that the tail check finds a planted
+driver, that the other age structure and the temperature what-if behave as described, that
+two saved runs list exactly the settings that differ, and that the equations written on the
+About tab, implemented literally, reproduce the model. The GitHub workflow runs them before
+rebuilding the site.
 
 ## Repository layout
 
 | Path | What it is |
 |---|---|
 | `app/app.R` | The whole app: model, interface and server |
-| `app/www/` | Images used by the app: the PVEC logo (outlined, so it does not need the Futura font), the browser-tab icon and the About photo |
+| `app/www/` | The page script (`pvec.js`), styles (`pvec.css`), and images: the PVEC logo (outlined, so it does not need the Futura font), the purple mosquito used as the browser-tab icon, and the About photo |
 | `docs/` | The exported site that GitHub Pages serves (generated, do not edit) |
 | `deploy.R` | Rebuilds `docs/` |
 | `tests/test_core.R` | Model and sampling checks |
@@ -114,8 +134,9 @@ implemented literally, reproduce the model. The GitHub workflow runs them before
 ## Settings file format
 
 **Save inputs** writes a two-column CSV (`setting`, `value`) listing the mortality model,
-age structure, growth rate, first-bite age, trials, seed, and the distribution and
-parameters of every assumption. Lines starting with `#` are comments. **Upload inputs**
+age structure, trials, seed, the temperature what-if (`temp` and the three per-degree changes),
+any rank correlations, and the distribution and parameters of every assumption (including the
+growth rate and first-bite age). Files saved before the temperature control existed still load. Lines starting with `#` are comments. **Upload inputs**
 reads the same format back.
 
 ## Citation

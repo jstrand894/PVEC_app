@@ -148,5 +148,75 @@ check(!is.null(saved) && identical(names(saved), names(fresh)) && identical(save
       all(abs(as.matrix(saved[-(1:2)]) - as.matrix(fresh[-(1:2)])) < 1e-8), "precomputed comparison table is up to date (otherwise run deploy.R)")
 check(identical(paper_table(cache = cache), saved) && identical(paper_table(cache = "no_such_file.csv")[[1]], fresh[[1]]), "comparison table loads from the saved copy and falls back to computing it")
 
+# --- Variance share, tail check and the other age structure -------------------------------------------------------
+set.seed(11); nn <- 4000
+x1 <- runif(nn); x2 <- runif(nn); x3 <- runif(nn)
+yv <- 3 * x1 + 1 * x2 + rnorm(nn, sd = 0.2)                 # x1 explains most of the variance, x3 none
+vi <- c(first_order_index(x1, yv), first_order_index(x2, yv), first_order_index(x3, yv))
+check(vi[1] > 0.8 && vi[1] < 0.95 && vi[2] > 0.05 && vi[2] < 0.2, "variance share recovers the main effects of an additive model")
+check(vi[3] < 0.02, "variance share is about zero for an input with no effect")
+yi <- (x1 - 0.5) * (x2 - 0.5)                              # a pure interaction: neither input explains anything alone
+check(first_order_index(x1, yi) + first_order_index(x2, yi) < 0.1, "variance shares credit nothing to inputs that only act together")
+ym <- x1 * x2                                               # a milder interaction: main effects add up to less than 100%
+check(first_order_index(x1, ym) + first_order_index(x2, ym) < 0.95, "variance shares add up to less than 100% when inputs interact")
+check(first_order_index(rep(1, nn), yv) == 0 && first_order_index(x1, rep(2, nn)) == 0, "variance share handles constant inputs and constant outputs")
+
+rl <- run_model("logistic", "stable", mk_specs("logistic", "stable", "lit"), 300, 5)
+rl$model <- "logistic"
+sc <- sens_contrib(rl)
+check(!is.null(sc$vari) && all(sc$vari >= 0 & sc$vari <= 100) && setequal(names(sc$vari), names(sc$rho)), "sens_contrib reports a variance share for every varying input")
+
+tt <- list(ct = exp(rnorm(2000)) , draws = data.frame(a = runif(2000), b = runif(2000)))
+tt$ct <- tt$ct * (1 + 30 * (tt$draws$a < 0.02))             # the top of the forecast comes from low values of a
+ti <- tail_info(tt)
+check(!is.null(ti) && ti$drivers$id[1] == "a" && ti$drivers$med[1] < 0.1 && ti$heavy, "tail check finds the input that drives the heaviest trials")
+check(is.null(tail_info(list(ct = rep(1, 500), draws = data.frame(a = runif(500))))) && is.null(tail_info(list(ct = rnorm(50), draws = data.frame(a = rnorm(50))))),
+      "tail check stays quiet for fixed outputs and for small runs")
+check(ordinal(0.01) == "1st" && ordinal(0.02) == "2nd" && ordinal(0.13) == "13th" && ordinal(0.93) == "93rd", "percentile labels read correctly")
+
+for (mod in c("exponential", "logistic")) {
+  rs <- run_model(mod, "stable", mk_specs(mod, "stable", "lit"), 200, 3); rs$model <- mod; rs$structure <- "stable"
+  other <- ct_other_structure(rs, "stable", chunk = 70)
+  check(max(abs(other / scalar_ct(mod, "synchronous", rs$draws, rs$b, rs$s) - 1)) < 1e-9, sprintf("the same draws run synchronously agree with the one-trial model (%s)", mod))
+  ry <- run_model(mod, "synchronous", mk_specs(mod, "synchronous", "lit"), 200, 3); ry$model <- mod
+  other2 <- ct_other_structure(ry, "synchronous", chunk = 70)
+  dd <- ry$draws; dd$growth_r <- pop_specs$growth_r$value; dd$first_bite <- pop_specs$first_bite$value
+  check(max(abs(other2 / scalar_ct(mod, "stable", dd, ry$b, ry$s) - 1)) < 1e-9, sprintf("the same draws run on the stable age distribution use the default r and first-bite age (%s)", mod))
+}
+
+# --- Temperature what-if and the comparison of two saved runs ----------------------------------------------------
+tm <- temp_multipliers(2, -10, 5, 3)
+check(abs(tm[["n_eip"]] - 0.9^2) < 1e-12 && abs(tm[["mort_a"]] - 1.05^2) < 1e-12 && abs(tm[["a_bite"]] - 1.03^2) < 1e-12, "temperature multipliers compound the percent change per degree")
+check(all(temp_multipliers(0, -10, 5, 3) == 1), "no temperature change leaves every multiplier at 1")
+sp0 <- mk_specs("logistic", "stable", "lit")
+base <- run_model("logistic", "stable", sp0, 200, 9)
+same <- run_model("logistic", "stable", sp0, 200, 9, adjust = c(n_eip = 1, mort_a = 1, a_bite = 1))
+check(identical(base$ct, same$ct), "a multiplier of 1 gives the identical result")
+warm <- run_model("logistic", "stable", sp0, 200, 9, adjust = temp_multipliers(3, -10, 5, 3))
+check(all(warm$draws$mort_a > 0) && abs(median(warm$draws$mort_a / base$draws$mort_a) - 1.05^3) < 1e-9 &&
+      abs(median(warm$draws$a_bite / base$draws$a_bite) - 1.03^3) < 1e-9, "the temperature what-if scales mortality a and the biting rate of every trial")
+check(all(warm$draws$n_eip >= 1 & warm$draws$n_eip <= 150) && median(warm$draws$n_eip) < median(base$draws$n_eip), "warming shortens the incubation period and keeps it within 1 to 150 days")
+
+sa <- c(model = "logistic", structure = "stable", trials = "1000", seed = "1", temp = "0", a_bite.dist = "Beta", a_bite.min = "0.25", a_bite.max = "0.76",
+        a_bite.shape1 = "2", a_bite.shape2 = "3", n_eip.dist = "Fixed", n_eip.value = "10")
+sb <- sa; sb[["n_eip.value"]] <- "8"; sb[["temp"]] <- "2"; sb[["trials"]] <- "2,000"
+dd <- snap_diff(sa, sb)
+check(setequal(dd$Setting, c("Trials", "Temperature change", labels[["n_eip"]])) && !("Seed" %in% dd$Setting), "comparing two saved runs lists exactly the settings that differ")
+check(nrow(snap_diff(sa, sa)) == 0, "two identical saved runs show no differences")
+check(identical(active_ids_for("exponential", "synchronous"), c(names(vc_specs), "mort_a")) && "growth_r" %in% active_ids_for("logistic", "stable"), "active assumptions follow the mortality model and age structure")
+
+# --- Published temperature curves ---------------------------------------------------------------------------------
+ae <- TEMP_CURVES$aedes_dengue; an <- TEMP_CURVES$anopheles_pf
+check(abs(ae$mu(27.6) - 0.0273) < 0.001 && abs(ae$n(25) - (4 + exp(5.15 - 0.123 * 25))) < 1e-12 && abs(ae$a(25) - 0.2018) < 1e-9,
+      "the Aedes aegypti and dengue curves return the published equations' values (lowest mortality near 27.6 C)")
+check(abs(an$mu(25) - 1 / 9.6) < 1e-12 && abs(an$n(26) - 11.1) < 1e-12 && is.null(an$a), "the Anopheles and Plasmodium falciparum curves follow Martens mortality and 111 degree-days above 16 C")
+for (cv in names(TEMP_CURVES)) check(all(curve_multipliers(cv, TEMP_CURVES[[cv]]$ref, 0)$mult == 1), sprintf("no temperature change leaves every multiplier at 1 on the %s curve", cv))
+w <- curve_multipliers("aedes_dengue", 27, 3)
+check(w$mult[["n_eip"]] < 1 && w$mult[["a_bite"]] > 1 && length(w$outside) == 0, "warming shortens incubation and raises biting on the Aedes curve, inside its fitted ranges")
+hot <- curve_multipliers("aedes_dengue", 27, 8)
+check(setequal(hot$outside, c("n", "mu", "a")) || all(c("mu", "a") %in% hot$outside), "going past the fitted range is flagged")
+check(is.null(temperature_adjust("generic", NULL, 0, -10, 5, 3)) && !is.null(temperature_adjust("generic", NULL, 2, -10, 5, 3)) &&
+      identical(temperature_adjust("generic", NULL, 2, -10, 5, 3)$mult, temp_multipliers(2, -10, 5, 3)), "the generic temperature option uses the per-degree changes and no change at 0")
+
 if (!all(unlist(results))) stop(sprintf("%d check(s) failed", sum(!unlist(results))), call. = FALSE)
 cat(sprintf("\nAll %d checks passed.\n", length(results)))
