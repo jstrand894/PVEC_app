@@ -995,7 +995,8 @@ ui <- fluidPage(
   tags$head(tags$link(rel = "stylesheet", type = "text/css", href = "pvec.css")),
   div(class = "print-only", textOutput("run_status_print")),
   sidebarLayout(
-    sidebarPanel(width = 3,
+    div(class = "col-sm-3",
+     tags$form(class = "well", role = "complementary",
       div(class = "settings-head",
         h4("Simulation settings", style = "margin: 0;"),
         tags$button(id = "collapse_sidebar", type = "button", class = "sidebar-arrow",
@@ -1031,12 +1032,13 @@ ui <- fluidPage(
           "You can still change any distribution by hand."))),
       div(class = "preset-vary", role = "status", `aria-live` = "polite", id = "preset_vary"),
       div(class = "preset-reset", actionLink("reset_preset", "Reset all values to this preset")),
-      div(class = "run-dock",
+      div(class = "start-over", actionLink("start_over", "Start over (defaults, clear run history)"))
+     ),
+     div(class = "run-dock",
         actionButton("run", "Run simulation", class = "btn-primary btn-lg", width = "100%",
                      title = "Shortcut: Cmd or Ctrl + Enter"),
         uiOutput("stale_note"),
-        div(class = "run-status", textOutput("run_status"))),
-      div(class = "start-over", actionLink("start_over", "Start over (defaults, clear run history)"))
+        div(class = "run-status", textOutput("run_status")))
     ),
     mainPanel(width = 9,
       tabsetPanel(id = "tabs",

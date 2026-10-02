@@ -36,8 +36,8 @@
     .empty-text { color: var(--muted); margin: 0 auto 14px; max-width: 460px; }
     body.has-results .empty-state { display: none; }
     body:not(.has-results) .results-body { display: none; }
-    .run-dock { position: sticky; bottom: 0; z-index: 5; background: var(--surface); margin: 0 -14px -12px; padding: 10px 14px 12px;
-      border-top: 1px solid var(--line); }
+    .run-dock { position: relative; z-index: 5; background: var(--surface); margin-top: 10px; padding: 10px 14px 12px; flex: none;
+      border: 1px solid var(--line); border-radius: 4px; box-shadow: 0 1px 2px rgba(16,24,40,0.04); }
     #run { font-weight: 600; letter-spacing: 0.01em; box-shadow: 0 1px 2px rgba(16,24,40,0.2); }
     .sec-count { margin-left: 8px; font-size: 12px; font-weight: 400; color: var(--muted); }
     .sec-desc { font-size: 12.5px; color: var(--muted); margin: -4px 0 8px; }
@@ -103,7 +103,10 @@
     .stale-note { animation: slide-in .25s ease-out; }
     @keyframes slide-in { from { opacity: 0; transform: translateY(-4px); } to { opacity: 1; transform: none; } }
     #preset .radio label span, .btn { transition: background-color .15s, border-color .15s, color .15s; }
-    #run.running { cursor: progress; animation: run-pulse 1.1s ease-in-out infinite; }
+    #run.running { cursor: progress; animation: none;
+      background: linear-gradient(90deg, var(--btn-dark) var(--p, 0%), var(--btn) var(--p, 0%)); }
+    #run.running:disabled { opacity: 1; }
+    .shiny-progress-notification.run-progress { display: none; }
     @keyframes run-pulse { 0%, 100% { opacity: 0.95; } 50% { opacity: 0.6; } }
     #run { transition: background-color .3s ease, border-color .3s ease, box-shadow .3s ease; }
     @media (prefers-reduced-motion: reduce) {
@@ -125,7 +128,8 @@
       .container-fluid > h2 { flex: none; margin: 6px 0 18px; }
       .container-fluid > .row { flex: 1 1 auto; min-height: 0; display: flex; }
       .container-fluid > .row::before, .container-fluid > .row::after { content: none; }
-      .container-fluid > .row > .col-sm-3 { overflow-y: auto; max-height: 100%; padding-bottom: 8px; }
+      .container-fluid > .row > .col-sm-3 { display: flex; flex-direction: column; max-height: 100%; padding-bottom: 8px; }
+      .container-fluid > .row > .col-sm-3 > .well { flex: 0 1 auto; min-height: 0; overflow-y: auto; margin-bottom: 0; }
       .container-fluid > .row > .col-sm-9 { display: flex; flex-direction: column; min-height: 0; }
       .container-fluid > .row > .col-sm-9 > .tabbable { display: flex; flex-direction: column; flex: 1 1 auto; min-height: 0; }
       .tabbable > .nav-tabs { flex: none; }
@@ -608,3 +612,19 @@
     html[data-theme="dark"] .btn-primary:hover, html[data-theme="dark"] .btn-default.btn-primary:hover,
     html[data-theme="dark"] .btn-primary:focus, html[data-theme="dark"] .btn-default.btn-primary:focus { background: var(--btn-dark); color: #fff; }
     html[data-theme="dark"] #run.stale { background: #f2b233; border-color: #c98a0a; color: #3a2600; }
+
+    /* Tabs: a tinted strip with a raised, accent-topped active tab so they stand out from the page */
+    #tabs.nav-tabs { border-bottom: 1px solid var(--line-strong); }
+    #tabs.nav-tabs > li > a { background: var(--surface-3); border: 1px solid var(--line); border-bottom-color: var(--line-strong);
+      margin-right: 3px; color: var(--muted); }
+    #tabs.nav-tabs > li > a:hover { background: var(--accent-soft); border-color: var(--accent-line); border-bottom-color: var(--line-strong); color: var(--text); }
+    #tabs.nav-tabs > li.active > a, #tabs.nav-tabs > li.active > a:hover, #tabs.nav-tabs > li.active > a:focus {
+      background: var(--surface); color: var(--accent-dark); font-weight: 600;
+      border-color: var(--line-strong) var(--line-strong) var(--surface); border-top: 3px solid var(--accent);
+      padding-top: 6px; box-shadow: 0 -2px 6px rgba(16,24,40,0.06); }
+
+    /* Run button progress fill. Placed last with extra specificity so it beats .stale and .btn-primary states */
+    #run.btn.running, #run.btn.running.stale, #run.btn.running:disabled {
+      background-color: var(--btn); border-color: var(--btn-dark); color: #fff; opacity: 1;
+      background-image: linear-gradient(90deg, rgba(255,255,255,0.32) var(--p, 0%), rgba(255,255,255,0) var(--p, 0%)); }
+    .shiny-progress-notification:not(.keep-progress) { display: none; }

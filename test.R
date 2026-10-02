@@ -13,3 +13,8 @@ httpuv::runStaticServer("docs")
 
 
 shinylive::export("app", "docs")
+
+shinylive::export("app", "docs")
+file.create("docs/.nojekyll")
+options(shiny.autoreload = TRUE)
+shiny::runApp("app", launch.browser = TRUE)

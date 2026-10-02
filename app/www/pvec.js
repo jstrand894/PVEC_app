@@ -8,16 +8,53 @@
       new MutationObserver(rehome).observe(document.body, {childList: true});
       rehome();
 
-      // Show a busy state on the Run button, delayed so quick updates do not flicker
-      var busyTimer = null;
-      $(document).on('shiny:busy', function() {
-        busyTimer = setTimeout(function() { $('#run').addClass('running').prop('disabled', true).text('Running...'); }, 250);
+      // Run button progress. The fill is animated on the page so it stays visible for at least
+      // RUN_MIN_MS even when the simulation itself finishes almost instantly.
+      var RUN_MIN_MS = 1800, run = null;
+      function runPct() {
+        var n = $('.shiny-progress-notification').filter(function() { return /Running trials/.test($(this).text()); });
+        var bar = n.find('.progress-bar')[0];
+        return bar ? Math.max(0, Math.min(100, parseFloat(bar.style.width) || 0)) : null;
+      }
+      // Only the trial bar is folded into the button; other progress bars (e.g. the model check) still show
+      function tagProgress() {
+        $('.shiny-progress-notification').each(function() {
+          if (/Running the comparison/.test($(this).text())) $(this).addClass('keep-progress');
+        });
+      }
+      function setRun(pct) {
+        var b = $('#run'), el = b[0];
+        if (!el) return;
+        el.style.setProperty('--p', pct + '%');
+        var label = 'Running... ' + Math.round(pct) + '%';
+        if (b.text() !== label) b.text(label);
+      }
+      function stepRun() {
+        if (!run) return;
+        var timePct = Math.min(1, (performance.now() - run.t0) / RUN_MIN_MS) * 100;
+        if (run.done && timePct >= 100) { finishRun(); return; }
+        // While R is working, never run ahead of the real progress (or past 95%) until it reports done
+        var shown = run.done ? timePct : Math.min(timePct, 95, runPct() || timePct * 0.5);
+        setRun(shown);
+      }
+      function finishRun() {
+        clearInterval(run.timer); run = null;
+        var b = $('#run');
+        b.removeClass('running').prop('disabled', false).text('Run simulation');
+        if (b[0]) b[0].style.removeProperty('--p');
+        if (window.syncRunStale) window.syncRunStale();
+      }
+      $(document).on('click', '#run', function() {
+        if (run) return;
+        run = {t0: performance.now(), done: false};
+        // Wait a tick so Shiny registers the click before the button is disabled
+        setTimeout(function() { $('#run').addClass('running').prop('disabled', true); setRun(0); run.timer = setInterval(stepRun, 30); }, 0);
       });
       $(document).on('shiny:idle', function() {
-        clearTimeout(busyTimer);
-        $('#run').removeClass('running').prop('disabled', false).text('Run simulation');
-        if (window.syncRunStale) window.syncRunStale();
+        if (run) run.done = true;
+        else if (window.syncRunStale) window.syncRunStale();
       });
+      new MutationObserver(tagProgress).observe(document.body, {childList: true, subtree: true});
 
       // Save any plot exactly as shown (buttons carry the plot id and file name)
       $(document).on('click', '.dl-img', function() {

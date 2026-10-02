@@ -1,4 +1,7 @@
-<img src="app/www/pvec_logo.svg" alt="PVEC" height="56">
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="app/www/pvec_logo_dark.svg">
+  <img src="app/www/pvec_logo.svg" alt="PVEC" height="56">
+</picture><img src="app/www/pvec_mosquito.svg" alt="" height="52">
 
 # Probabilistic Vectorial Capacity Simulator
 
