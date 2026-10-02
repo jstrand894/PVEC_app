@@ -16,6 +16,7 @@
       $(document).on('shiny:idle', function() {
         clearTimeout(busyTimer);
         $('#run').removeClass('running').prop('disabled', false).text('Run simulation');
+        if (window.syncRunStale) window.syncRunStale();
       });
 
       // Save any plot exactly as shown (buttons carry the plot id and file name)
@@ -41,7 +42,7 @@
 
       // Save all the draws tiles as one image, three to a row
       $(document).on('click', '.dl-grid', function() {
-        var imgs = $('#' + $(this).data('target') + ' img').toArray();
+        var imgs = $('#' + $(this).data('target') + ' .draw-tile:visible img').toArray();
         var name = $(this).data('file') || 'plots.png';
         if (!imgs.length) return;
         var cols = Math.min(3, imgs.length), w = imgs[0].naturalWidth, h = imgs[0].naturalHeight;
@@ -56,6 +57,26 @@
         });
       });
 
+      // Assumption draws: show all, only varying, or only fixed cards, with a running count
+      function applyDrawsFilter() {
+        var tiles = $('.draw-tile'), nFixed = tiles.filter('[data-fixed="1"]').length;
+        // The filter only means something when there are both fixed and varying assumptions
+        var mixed = nFixed > 0 && nFixed < tiles.length;
+        $('.seg-js').toggle(mixed);
+        if (!mixed) $('.seg-js button').removeClass('on').first().addClass('on');
+        var f = $('.seg-js .on').data('filter') || 'all', n = 0;
+        tiles.each(function() {
+          var fixed = $(this).attr('data-fixed') === '1', show = f === 'all' || (f === 'fixed' ? fixed : !fixed);
+          $(this).toggle(show); if (show) n++;
+        });
+        $('.draws-count').text(mixed ? n + ' of ' + tiles.length + ' shown'
+                               : tiles.length ? (nFixed ? 'All ' + tiles.length + ' assumptions are fixed' : 'All ' + tiles.length + ' assumptions are varying') : '');
+      }
+      $(document).on('click', '.seg-js button', function() {
+        $(this).addClass('on').siblings().removeClass('on'); applyDrawsFilter();
+      });
+      $(document).on('shiny:value', function(e) { if (e.name === 'draws_grid') setTimeout(applyDrawsFilter, 50); });
+
       // Allow loading the same settings file twice in a row
       $(document).on('click', '#load_settings', function() { this.value = ''; });
 
@@ -67,6 +88,17 @@
           if (msg !== '') $('#card_' + id).addClass('open').find('.assump-toggle').attr('aria-expanded', 'true');
           $('#' + id + '_dist').closest('.well').toggleClass('assump-invalid', msg !== '');
         });
+      });
+
+      // A blocked run brings the first card with a problem into view and pulses it
+      Shiny.addCustomMessageHandler('scrollToError', function(msg) {
+        var card = $('.assump-invalid').first();
+        if (!card.length) return;
+        var sc = pageScroller(), r = card[0].getBoundingClientRect();
+        var y = (sc ? sc.scrollTop : window.scrollY) + r.top - (sc ? sc.getBoundingClientRect().top : 0) - 70;
+        if (sc) sc.scrollTo({top: Math.max(0, y), behavior: 'smooth'}); else window.scrollTo({top: Math.max(0, y), behavior: 'smooth'});
+        card.removeClass('err-pulse'); void card[0].offsetWidth; card.addClass('err-pulse');
+        card.find('input:visible').first().trigger('focus');
       });
 
       Shiny.addCustomMessageHandler('assumpWarn', function(w) {
@@ -108,6 +140,10 @@
       }
 
       // Copy a table as tab-separated text, which pastes into Excel or Word as a table
+      $(document).on('click', '.cite-btn', function() {
+        var btn = $(this);
+        copyText(String(btn.attr('data-cite'))).then(function(ok) { flash(btn, ok ? 'Copied!' : 'Copy failed', ok); });
+      });
       $(document).on('click', '.copy-table', function() {
         var btn = $(this);
         var rows = $('#' + btn.data('target') + ' table tr').map(function() {
@@ -207,11 +243,12 @@
           var chip = $('.jump-chip[data-target="' + sec + '"]'), shown = $('#' + sec).is(':visible');
           chip.toggle(shown);
           if (!shown) return;
-          if ($('#' + sec + ' .card-off').length) { chip.find('.jump-count').text(''); setTip(chip, 'Not used with synchronous emergence.'); return; }
+          if ($('#' + sec + ' .card-off').length) { $('#' + sec + ' .sec-count').text(''); chip.find('.jump-count').text(''); setTip(chip, 'Not used with synchronous emergence.'); return; }
           var vis = cardSections[sec].filter(function(id) { return $('#card_' + id).is(':visible'); });
           var varying = vis.filter(function(id) { return $('#' + id + '_dist').val() !== 'Fixed' || $('#card_' + id).hasClass('assump-uploaded'); });
           var n = varying.length, m = vis.length;
           chip.find('.jump-count').text(n + '/' + m);
+          $('#' + sec + ' .sec-count').text(n + ' of ' + m + ' varying');
           setTip(chip, n === m ? 'All ' + m + ' assumptions here are drawn from a distribution, so each adds uncertainty to the forecast.'
                  : n === 0 ? 'None of these ' + m + ' assumptions are varying. Each is fixed at one value, so they add no uncertainty. Open a card and pick a distribution to vary one.'
                  : n + ' of ' + m + ' assumptions here are drawn from a distribution. The other ' + (m - n) + (m - n === 1 ? ' is' : ' are') + ' fixed at one value.');
@@ -244,13 +281,42 @@
         });
         if (max) cards.css('min-height', max + 'px');
       }
+      // The colour key only lists the states that at least one card is in right now
+      function updateLegend() {
+        var any = false;
+        [['lg-edit', 'assump-differs'], ['lg-run', 'assump-changed'], ['lg-up', 'assump-uploaded']].forEach(function(p) {
+          var on = $('.assump-card.' + p[1]).length > 0; any = any || on;
+          $('.card-legend .' + p[0]).toggleClass('on', on);
+        });
+        $('.card-legend').toggleClass('on', any);
+      }
+      // Preset summary: how many inputs are drawn from a distribution now, and briefly how many were before
+      var varyNow = null, varyWas = null, varyTimer = null, presetJustChanged = false;
+      function updatePresetVary() {
+        var vis = $('.assump-card:visible').not('.card-off'), n = 0;
+        vis.each(function() {
+          var id = this.id.replace('card_', '');
+          if ($('#' + id + '_dist').val() !== 'Fixed' || $(this).hasClass('assump-uploaded')) n++;
+        });
+        var m = vis.length, el = $('#preset_vary');
+        if (!m) return;
+        if (presetJustChanged && varyNow !== null && n !== varyNow) {
+          varyWas = varyNow; presetJustChanged = false;
+          clearTimeout(varyTimer); varyTimer = setTimeout(function() { varyWas = null; updatePresetVary(); }, 9000);
+        }
+        varyNow = n;
+        var html = '<b>' + n + ' of ' + m + '</b> inputs drawn from a distribution' +
+                   (varyWas !== null ? ' <span class="was">(was ' + varyWas + ')</span>' : '');
+        if (el.html() !== html) el.html(html);
+      }
+      $(document).on('shiny:inputchanged', function(e) { if (e.name === 'preset') presetJustChanged = true; });
       function refreshAll() {
         refreshStructure();
         $('.assump-card').each(function() {
           var id = this.id.replace('card_', '');
           $('#' + id + '_summary').text($(this).hasClass('assump-uploaded') ? 'From uploaded draws' : cardSummary(id));
         });
-        refreshCounts(); refreshLinkStatus(); equalizeCards();
+        refreshCounts(); refreshLinkStatus(); equalizeCards(); updateLegend(); updatePresetVary();
       }
       var refreshTimer = null;
       function scheduleRefresh() { clearTimeout(refreshTimer); refreshTimer = setTimeout(refreshAll, 120); }
@@ -273,7 +339,32 @@
             $(e.target).closest('.assump-body, .edited-tools, a, :input, label').length) return;
         var open = !card.hasClass('open');
         card.toggleClass('open', open).find('.assump-toggle').attr('aria-expanded', String(open));
+        if (open) keepCardInView(card[0]);
       });
+      // While a card opens, ease the page down just enough to show its whole body
+      // (its top stays visible if it is taller than the view)
+      var scrollAnim = 0;
+      function keepCardInView(el) {
+        var sc = pageScroller(), r = el.getBoundingClientRect();
+        var clip = el.querySelector('.assump-body-clip'), body = el.querySelector('.assump-body');
+        var finalBottom = r.bottom + (clip.scrollHeight - body.offsetHeight);   // where the bottom will be once fully open
+        var top = (sc ? sc.getBoundingClientRect().top : 0) + 52;               // clear the sticky jump bar
+        var bottom = (sc ? sc.getBoundingClientRect().bottom : window.innerHeight) - 12;
+        var dy = Math.min(finalBottom - bottom, r.top - top);                   // never push the card's top above the bar
+        if (dy <= 0) return;
+        var y0 = sc ? sc.scrollTop : window.scrollY;
+        function set(y) { if (sc) sc.scrollTop = y; else window.scrollTo(0, y); }
+        if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) { set(y0 + dy); return; }
+        var id = ++scrollAnim, t0 = null;
+        requestAnimationFrame(function step(ts) {
+          if (id !== scrollAnim) return;                                         // a newer scroll took over
+          if (t0 === null) t0 = ts;
+          var p = Math.min(1, (ts - t0) / 380);
+          var e = p < 0.5 ? 4 * p * p * p : 1 - Math.pow(-2 * p + 2, 3) / 2;    // ease in and out
+          set(y0 + dy * e);
+          if (p < 1) requestAnimationFrame(step);
+        });
+      }
       $(document).on('click', '#expand_all', function() {
         $('.assump-card:not(.card-off)').addClass('open').find('.assump-toggle').attr('aria-expanded', 'true'); setLink(true);
       });
@@ -317,7 +408,7 @@
       function spy() {
         spyQueued = false;
         var sc = pageScroller(), base = sc ? sc.getBoundingClientRect().top : 0, active = null;
-        var secs = $('.assump-section:visible');
+        var secs = $('.assump-section:visible, .about-section:visible');
         secs.each(function() {
           if (active === null || this.getBoundingClientRect().top - base <= 70) active = this.id;
         });
@@ -330,6 +421,7 @@
       document.addEventListener('scroll', function() { if (!spyQueued) { spyQueued = true; requestAnimationFrame(spy); } }, true);
       setTimeout(spy, 700);
 
+      if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) $.fx.off = true;
       // Getting started: dismissal is remembered (when the browser allows it) and leaves a one-line link
       function setHowto(show) {
         if (show) { $('#howto').slideDown(150); $('#howto_open').hide(); try { localStorage.removeItem('vc_howto'); } catch (e) {} }
@@ -347,16 +439,69 @@
 
       // Per card: a not-run-yet badge when it changed since the last run, a reset link when it differs from the preset
       Shiny.addCustomMessageHandler('cardStates', function(st) {
+        // When most cards changed at once (a preset or model switch), one note replaces a badge on every card
+        var nChanged = Object.keys(st).filter(function(id) { return st[id].changed; }).length, bulk = nChanged >= 4;
         Object.keys(st).forEach(function(id) {
           $('#' + id + '_dist').closest('.well')
-            .toggleClass('assump-changed', !!st[id].changed)
+            .toggleClass('assump-changed', !!st[id].changed && !bulk)
             .toggleClass('assump-differs', !!st[id].differs);
         });
+        $('.bulk-note').toggleClass('on', bulk);
+        updateLegend();
+      });
+
+      // The run message can arrive before the handler above is registered, so also read it from the status line
+      $(document).on('shiny:value', function(e) {
+        if (e.name === 'run_status' && /^Run \d/.test(String(e.value))) $('body').addClass('has-results');
+      });
+      $(document).on('click', '.empty-run', function() { $('#run').trigger('click'); });
+
+      // When the results are out of date the server shows a note; mirror that on the Run button
+      function syncRunStale() {
+        var stale = $('#stale_note .stale-note').length > 0, b = $('#run');
+        b.toggleClass('stale', stale);
+        if (!b.hasClass('running')) b.text(stale ? 'Re-run simulation' : 'Run simulation');
+      }
+      window.syncRunStale = syncRunStale;
+      // When the "Settings changed" note is removed, keep a copy that shrinks and fades instead of vanishing
+      function fadeOutStaleNote(node) {
+        var ghost = $(node).clone().removeClass('stale-note').addClass('stale-ghost').appendTo($('#stale_note'));
+        var el = ghost[0], h = el.getBoundingClientRect().height;
+        if (!el.animate || window.matchMedia('(prefers-reduced-motion: reduce)').matches) { ghost.remove(); return; }
+        el.style.overflow = 'hidden';
+        var anim = el.animate([
+          {height: h + 'px', opacity: 1, marginTop: '8px', paddingTop: '5px', paddingBottom: '5px'},
+          {height: '0px', opacity: 0, marginTop: '0px', paddingTop: '0px', paddingBottom: '0px'}
+        ], {duration: 300, easing: 'ease', fill: 'forwards'});
+        anim.onfinish = function() { ghost.remove(); };
+        setTimeout(function() { ghost.remove(); }, 700);   // safety net if the animation never finishes (page in the background)
+      }
+      $(function() {
+        var n = document.getElementById('stale_note');
+        if (n) new MutationObserver(function(muts) {
+          muts.forEach(function(m) {
+            Array.prototype.forEach.call(m.removedNodes, function(node) {
+              if (node.nodeType === 1 && node.classList.contains('stale-note') && !$('#stale_note .stale-note').length) fadeOutStaleNote(node);
+            });
+          });
+          syncRunStale();
+        }).observe(n, {childList: true, subtree: true});
+      });
+
+      // Getting started tucks itself away after the first run you start yourself (the app also runs once on load)
+      var userRan = false, howtoAutoDone = false;
+      $(document).on('click', '#run', function() { userRan = true; });
+      $(document).on('vc:results', function() {
+        if (!userRan || howtoAutoDone) return;
+        howtoAutoDone = true;
+        if ($('#howto').is(':visible')) { $('#howto').slideUp(250); $('#howto_open').show(); }
       });
 
       // Purple dot on result tabs when a run has produced new results you have not viewed yet
       var resultTabs = ['Forecast', 'Sensitivity', 'Assumption draws', 'Survival curves'];
       Shiny.addCustomMessageHandler('newResults', function(msg) {
+        $('body').addClass('has-results');
+        $(document).trigger('vc:results');
         // On phones the results sit below the settings, so bring them into view
         if (window.innerWidth < 768 && !window.__firstRunDone) { window.__firstRunDone = true; }
         else if (window.innerWidth < 768) { setTimeout(function() { $('#tabs')[0].scrollIntoView(); }, 400); }
@@ -365,11 +510,55 @@
           if (!a.parent().hasClass('active')) a.addClass('tab-new').attr({title: 'New results', 'aria-label': v + ', new results'});
         });
       });
+      // Preset descriptions: size the box to the visible one so the controls below ease into place
+      function sizePresetStack() {
+        var st = $('#preset_stack'), on = st.find('.preset-pane.on');
+        if (on.length) st.css('height', on.outerHeight(true) + 'px');
+      }
+      $(document).on('shiny:inputchanged', function(e) {
+        if (e.name !== 'preset') return;
+        $('#preset_stack .preset-pane').removeClass('on').filter('[data-preset="' + e.value + '"]').addClass('on');
+        sizePresetStack();
+      });
+      if (window.ResizeObserver) {
+        var ro = new ResizeObserver(sizePresetStack);
+        $('#preset_stack .preset-pane').each(function() { ro.observe(this); });
+      }
+      setTimeout(sizePresetStack, 50); $(window).on('resize', sizePresetStack);
+      setTimeout(function() { $('#preset_stack').addClass('animate'); }, 700);   // no easing for the first sizing at load
+
+      // Tab switch: hide the pane you are leaving at once (Bootstrap keeps it visible for ~150 ms, stacked under
+      // the new one, which showed as a flash of the old plots) and start fading the new pane in right away
+      $(document).on('show.bs.tab', '#tabs a', function(e) {
+        var np = $($(e.target).attr('href')), op = e.relatedTarget ? $($(e.relatedTarget).attr('href')) : $();
+        op.addClass('leaving').removeClass('in');
+        np.addClass('in');
+      });
+      $(document).on('shown.bs.tab', '#tabs a', function() { $('.tab-pane.leaving').removeClass('leaving'); });
+
+      // Light / dark theme. The choice is remembered, and plots redraw in the new colours.
+      function sendTheme() {
+        if (window.Shiny && Shiny.setInputValue) Shiny.setInputValue('theme', document.documentElement.getAttribute('data-theme') || 'light');
+      }
+      $(document).on('shiny:connected', sendTheme);
+      if (window.Shiny && Shiny.shinyapp && Shiny.shinyapp.isConnected()) sendTheme();
+      $(document).on('click', '#theme_toggle', function() {
+        var next = document.documentElement.getAttribute('data-theme') === 'dark' ? 'light' : 'dark';
+        document.documentElement.setAttribute('data-theme', next);
+        try { localStorage.setItem('vc_theme', next); } catch (e) {}
+        sendTheme();
+        // Shiny reports each plot's background and text colour when it resizes, which is what makes R redraw them
+        setTimeout(function() { $(window).trigger('resize'); }, 60);
+      });
+
+      // Cross-fade between tabs (Bootstrap fades panes that carry the fade class)
+      $('#tabs').closest('.tabbable').find('> .tab-content > .tab-pane').addClass('fade').filter('.active').addClass('in');
       $(document).on('shown.bs.tab', '#tabs a', function() {
         $(this).removeClass('tab-new').removeAttr('title').removeAttr('aria-label');
         // All tabs share one scroll area, so a position left on a long tab would carry over and show only the bottom of a short one
         var sc = pageScroller(); if (sc) sc.scrollTop = 0;
         setTimeout(spy, 50);
+        setTimeout(function() { $(window).trigger('resize'); }, 80);   // plots on a tab that was hidden during a theme change redraw now
       });
     });
   

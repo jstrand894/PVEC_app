@@ -107,9 +107,9 @@ implemented literally, reproduce the model. The GitHub workflow runs them before
 
 ## Settings file format
 
-**Save settings** writes a two-column CSV (`setting`, `value`) listing the mortality model,
+**Save inputs** writes a two-column CSV (`setting`, `value`) listing the mortality model,
 age structure, growth rate, first-bite age, trials, seed, and the distribution and
-parameters of every assumption. Lines starting with `#` are comments. **Upload settings**
+parameters of every assumption. Lines starting with `#` are comments. **Upload inputs**
 reads the same format back.
 
 ## Citation
