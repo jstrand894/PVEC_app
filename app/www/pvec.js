@@ -275,7 +275,7 @@
         var p = new URLSearchParams();
         p.set('model', $('input[name=mort_model]:checked').val()); p.set('structure', $('input[name=structure]:checked').val());
         p.set('trials', String($('#n_iter').val()).replace(/,/g, '')); p.set('seed', $('#seed').val());
-        p.set('temp', $('#temp_delta').val()); p.set('temp.curve', $('#temp_curve').val()); p.set('temp.ref', $('#temp_ref').val()); p.set('temp.pe', $('#temp_pe').val()); p.set('temp.pm', $('#temp_pm').val()); p.set('temp.pa', $('#temp_pa').val());
+        p.set('temp', $('#temp_delta').val()); p.set('temp.on', $('#temp_on').prop('checked') ? 'TRUE' : 'FALSE'); p.set('temp.curve', $('#temp_curve').val()); p.set('temp.ref', $('#temp_ref').val()); p.set('temp.pe', $('#temp_pe').val()); p.set('temp.pm', $('#temp_pm').val()); p.set('temp.pa', $('#temp_pa').val());
         settingIds.forEach(function(id) {
           p.set(id + '.dist', $('#' + id + '_dist').val());
           var src = $('#' + id + '_source').val();
@@ -579,7 +579,7 @@
       Shiny.addCustomMessageHandler('startOver', function(msg) {
         try { var w = topWin(); w.history.replaceState(null, '', w.location.pathname + w.location.search); } catch (e) {}
         // Everything back to how the page looks on a first visit: the Getting started panel returns too
-        try { localStorage.removeItem('vc_howto'); } catch (e) {}
+        try { localStorage.removeItem('vc_howto'); localStorage.removeItem('vc_ui'); } catch (e) {}
         // A fresh navigation, not a reload, so the browser cannot refill the form fields with the old values
         window.location.replace(window.location.href.split('#')[0]);
       });
@@ -626,10 +626,24 @@
         anim.onfinish = function() { ghost.remove(); };
         setTimeout(function() { ghost.remove(); }, 700);   // safety net if the animation never finishes (page in the background)
       }
+      // When the note appears, open it from zero height so the run status and Past runs slide down instead of jumping
+      function growStaleNote(node) {
+        var h = node.getBoundingClientRect().height;
+        if (!node.animate || !h || window.matchMedia('(prefers-reduced-motion: reduce)').matches) return;
+        node.style.overflow = 'hidden';
+        var anim = node.animate([
+          {height: '0px', opacity: 0, marginTop: '0px', paddingTop: '0px', paddingBottom: '0px'},
+          {height: h + 'px', opacity: 1, marginTop: '8px', paddingTop: '5px', paddingBottom: '5px'}
+        ], {duration: 300, easing: 'ease'});
+        anim.onfinish = anim.oncancel = function() { node.style.overflow = ''; };
+      }
       $(function() {
         var n = document.getElementById('stale_note');
         if (n) new MutationObserver(function(muts) {
           muts.forEach(function(m) {
+            Array.prototype.forEach.call(m.addedNodes, function(node) {
+              if (node.nodeType === 1 && node.classList.contains('stale-note')) growStaleNote(node);
+            });
             Array.prototype.forEach.call(m.removedNodes, function(node) {
               if (node.nodeType === 1 && node.classList.contains('stale-note') && !$('#stale_note .stale-note').length) fadeOutStaleNote(node);
             });
@@ -773,6 +787,51 @@
   });
 })();
 
+// Hover on the forecast and sensitivity charts. The server sends each bar's position (in the chart's own data units) and its tooltip
+// text; the chart's coordinate map arrives with each drawing. Here the mouse position is turned into data units, the bar under it is
+// found, and a highlight and tooltip are drawn over the picture, so they follow the mouse at once with no round trip to the server.
+(function () {
+  var bars = {}, maps = {};
+  Shiny.addCustomMessageHandler('hoverBars', function (m) { bars[m.chart] = m.bars || []; $('.tip-cell').each(function () { hide(this); }); });
+  $(document).on('shiny:value', function (e) {
+    if (e.name === 'forecast_plot' || e.name === 'sens_plot') maps[e.name] = e.value && e.value.coordmap;
+  });
+  function parts(cell) {
+    var hl = cell.querySelector('.bar-hl'), tip = cell.querySelector('.js-tip');
+    if (!hl) { hl = document.createElement('div'); hl.className = 'bar-hl'; cell.appendChild(hl); }
+    if (!tip) { tip = document.createElement('div'); tip.className = 'surv-tip js-tip'; cell.appendChild(tip); }
+    return {hl: hl, tip: tip};
+  }
+  function hide(cell) {
+    var hl = cell.querySelector('.bar-hl'), tip = cell.querySelector('.js-tip');
+    if (hl) hl.classList.remove('on'); if (tip) tip.style.display = 'none';
+  }
+  $(document).on('mousemove', '.tip-cell', function (e) {
+    var cell = this, out = cell.querySelector('.shiny-plot-output'), img = out && out.querySelector('img');
+    var r0 = cell.getBoundingClientRect(), x = e.clientX - r0.left;
+    cell.style.setProperty('--tx', x + 'px'); cell.style.setProperty('--ty', (e.clientY - r0.top) + 'px');
+    cell.classList.toggle('tip-flip', x > r0.width / 2);
+    var list = out && bars[out.id], map = out && maps[out.id], panel = map && map.panels && map.panels[0];
+    if (!img || !list || !panel || e.buttons) return hide(cell);   // nothing while dragging a range
+    var ir = img.getBoundingClientRect(), sx = map.dims.width / ir.width, sy = map.dims.height / ir.height;
+    var d = panel.domain, g = panel.range, px = (e.clientX - ir.left) * sx, py = (e.clientY - ir.top) * sy;
+    var dx = d.left + (px - g.left) / (g.right - g.left) * (d.right - d.left);
+    var dy = d.bottom + (g.bottom - py) / (g.bottom - g.top) * (d.top - d.bottom);
+    var hit = null;
+    for (var i = 0; i < list.length; i++) { var b = list[i]; if (dx >= b.x0 && dx <= b.x1 && dy >= b.y0 && dy <= b.y1) { hit = b; break; } }
+    if (!hit) return hide(cell);
+    function cx(v) { return (g.left + (v - d.left) / (d.right - d.left) * (g.right - g.left)) / sx + ir.left - r0.left; }
+    function cy(v) { return (g.bottom - (v - d.bottom) / (d.top - d.bottom) * (g.bottom - g.top)) / sy + ir.top - r0.top; }
+    var p = parts(cell);
+    p.hl.style.left = cx(hit.x0) + 'px'; p.hl.style.width = (cx(hit.x1) - cx(hit.x0)) + 'px';
+    p.hl.style.top = cy(hit.y1) + 'px'; p.hl.style.height = (cy(hit.y0) - cy(hit.y1)) + 'px';
+    p.hl.classList.add('on');
+    if (p.tip.dataset.html !== hit.tip) { p.tip.innerHTML = hit.tip; p.tip.dataset.html = hit.tip; }
+    p.tip.style.display = 'block';
+  });
+  $(document).on('mouseleave', '.tip-cell', function () { hide(this); });
+})();
+
 // Survival charts: tell the app when the mouse leaves a chart so the highlighted line is cleared
 $(document).on('mouseleave', '.surv-cell', function () { Shiny.setInputValue('surv_leave', Date.now(), {priority: 'event'}); });
 
@@ -880,9 +939,34 @@ $(document).on('shiny:value', function(e) {
 
 // Past runs: click a run to reload its settings, the pencil renames it, and the earlier runs fold away
 (function () {
-  function load(item) { Shiny.setInputValue('scenario_load', Number($(item).data('id')), {priority: 'event'}); }
+  // Clicking a run fades that run's card and lays a short message over it, so nothing above it moves. The message keeps following its
+  // card for as long as it shows: when the run finishes, the card gains tags and the list redraws, and the message resizes with it.
+  function flash(item) {
+    var box = $('.history-box').first(); if (!box.length) return;
+    box.find('.scen-flash').remove();
+    var id = $(item).data('id');
+    var msg = $('<div class="scen-flash" role="status"><svg class="scen-check" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="10"/><path d="M7 12.5l3.2 3.2L17 8.8"/></svg><span>Settings loaded. Click Run to use them.</span></div>').appendTo(box);
+    var gone = false;
+    function place() {
+      if (gone) return;
+      var card = box.find('.scen-item').filter(function () { return $(this).data('id') === id; })[0];
+      if (card) {
+        var br = box[0].getBoundingClientRect(), ir = card.getBoundingClientRect();
+        if (ir.height > 0) msg.css({top: ir.top - br.top - box[0].clientTop + box[0].scrollTop, left: ir.left - br.left - box[0].clientLeft, width: ir.width, height: ir.height, visibility: ''});
+        else msg.css('visibility', 'hidden');   // the card is folded away (for example under "earlier runs")
+      }
+    }
+    (function tick() { place(); if (!gone) requestAnimationFrame(tick); })();
+    var timer = setInterval(place, 120);   // keeps following even when frames are not being drawn
+    requestAnimationFrame(function () { msg.addClass('on'); });
+    setTimeout(function () {
+      msg.removeClass('on');
+      setTimeout(function () { gone = true; clearInterval(timer); msg.remove(); }, 450);
+    }, 2200);
+  }
+  function load(item) { flash(item); Shiny.setInputValue('scenario_load', Number($(item).data('id')), {priority: 'event'}); }
   $(document).on('click', '.scen-item', function(e) {
-    if ($(e.target).closest('.scen-edit, .scen-cmp, .scen-run, .scen-del, .scen-input').length) return;
+    if ($(e.target).closest('.scen-edit, .scen-cmp, .scen-run, .scen-del, .scen-dl, .scen-input').length) return;
     load(this);
   });
   $(document).on('keydown', '.scen-item', function(e) {
@@ -984,3 +1068,406 @@ $(function() {
     }, 500);
   });
 });
+
+// Temperature section (and its "Baseline and settings" fold): a plain <details> snaps open and shut, which makes everything
+// below it jump. Animate the height instead so the rest of the sidebar slides out of the way.
+(function () {
+  var running = new WeakMap(), target = new WeakMap();   // the animation in progress, and whether it ends open
+  $(document).on('click', '.temp-section > summary, .temp-sens > summary', function (e) {
+    if ($(e.target).closest('.temp-switch').length) return;   // the on/off switch is not part of the fold's toggle
+    var d = this.parentNode;
+    if (!d.animate || window.matchMedia('(prefers-reduced-motion: reduce)').matches) return;   // fall back to the normal toggle
+    e.preventDefault();
+    var start = d.getBoundingClientRect().height, prev = running.get(d);
+    var closing = prev ? target.get(d) : d.open;            // a click during an animation turns it around
+    if (prev) prev.cancel();
+    d.style.overflow = 'hidden';
+    var end;
+    if (closing) {
+      var cs = getComputedStyle(d);
+      end = this.getBoundingClientRect().height + (parseFloat(cs.borderTopWidth) || 0) + (parseFloat(cs.borderBottomWidth) || 0);
+    } else { d.open = true; end = d.scrollHeight; }
+    var anim = d.animate([{height: start + 'px'}, {height: end + 'px'}], {duration: 300, easing: 'cubic-bezier(.4,0,.2,1)'});
+    running.set(d, anim); target.set(d, !closing);
+    anim.onfinish = function () { d.open = !closing; d.style.overflow = ''; running.delete(d); };
+    anim.oncancel = function () { d.style.overflow = ''; };
+  });
+})();
+
+
+// Temperature slider: a thin track with a fill that grows out from zero (blue for cooler, orange for warmer), a round handle, a readout,
+// and quick-pick chips. The value lives in a hidden number box (#temp_delta) that Shiny reads, so saving, loading and presets work as
+// for any input. Clicking the track glides the handle to that point; dragging follows the pointer directly. The handle, the fill and
+// the colour are all drawn from one number (--p), so they cannot drift apart.
+(function () {
+  var MIN = -8, MAX = 8, STEP = 0.1, target = 0, shown = 0, anim = null, selfChange = false, commitTimer = null, prevTarget = null;
+  function box() { return $('.temp-slider'); }
+  function round1(v) { return Math.round(v * 10) / 10; }
+  function clamp(v) { return round1(Math.min(MAX, Math.max(MIN, Math.round(v / STEP) * STEP))); }
+  // The badge in the section header shows while the switch is on and a change is set
+  function badge(v) { var cb = document.getElementById('temp_on'); $('.temp-section').toggleClass('badge-on', !!(cb && cb.checked && v !== 0)); }
+  window.tempBadge = function () { badge(target); };
+  function fmt(v) { return v === 0 ? '0' : (v > 0 ? '+' : '\u2212') + Math.abs(v); }
+  function paint(v) { shown = v; var b = box()[0]; if (b) b.style.setProperty('--p', (v - MIN) / (MAX - MIN)); }
+  function ui(v) {
+    var b = box(); if (!b.length) return;
+    b.toggleClass('is-warm', v > 0).toggleClass('is-cool', v < 0).toggleClass('is-zero', v === 0);
+    var txt = v === 0 ? 'No change' : (v > 0 ? '+' : '\u2212') + Math.abs(v) + ' \u00b0C';
+    var field = document.getElementById('temp_value'); if (field && document.activeElement !== field) field.value = fmt(v);
+    b.find('.ts-handle').attr({'aria-valuenow': v, 'aria-valuetext': txt});
+    b.find('.temp-chip').each(function () { $(this).toggleClass('on', Number($(this).data('v')) === v); });
+    if (v !== 0) $('#temp_badge').text((v > 0 ? '+' : '\u2212') + Math.abs(v) + ' \u00b0C');   // keeps its text while it fades out at zero
+    badge(v);
+    $('.temp-section').toggleClass('has-temp', v !== 0);     // the on/off switch only shows once a change is set
+    // A move to a non-zero value switches the section on, however it was made (pointer, keys, chips, a preset or loaded settings)
+    if (prevTarget !== null && v !== prevTarget && v !== 0 && window.tempSetOn) window.tempSetOn(true);
+    prevTarget = v;
+  }
+  // Tell Shiny. While dragging this is spread out, so the server is not flooded.
+  function commit(now) {
+    clearTimeout(commitTimer);
+    var send = function () {
+      var inp = document.getElementById('temp_delta'); if (!inp) return;
+      inp.value = String(round1(target)); selfChange = true; $(inp).trigger('change'); selfChange = false;
+    };
+    if (now) send(); else commitTimer = setTimeout(send, 140);
+  }
+  function stopAnim() { if (anim) { cancelAnimationFrame(anim.id); anim = null; } }
+  // Move to v: glide (ease-out over 260 ms) or jump straight there
+  function setValue(v, how) {
+    v = clamp(v); stopAnim(); target = v; ui(v);
+    var reduce = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    if (how === 'glide' && !reduce && shown !== v && window.requestAnimationFrame) {
+      var from = shown, t0 = null, token = {};
+      anim = {token: token};
+      var step = function (ts) {
+        if (!anim || anim.token !== token) return;
+        if (t0 === null) t0 = ts;
+        var p = Math.min(1, (ts - t0) / 260), e = 1 - Math.pow(1 - p, 3);
+        paint(from + (v - from) * e);
+        if (p < 1) anim.id = requestAnimationFrame(step); else { anim = null; paint(v); }
+      };
+      anim.id = requestAnimationFrame(step);
+      setTimeout(function () { if (anim && anim.token === token) { anim = null; paint(v); } }, 500);   // frames not being drawn (a background tab)
+    } else paint(v);
+    if (how !== 'external') commit(how === 'glide' || how === 'end');
+  }
+  function valueAt(clientX, offset) {
+    var tr = box().find('.ts-track')[0].getBoundingClientRect();
+    return MIN + Math.min(1, Math.max(0, (clientX + (offset || 0) - tr.left) / tr.width)) * (MAX - MIN);
+  }
+  // Pointer: a click glides to the point; once the pointer moves it drags directly
+  $(document).on('pointerdown', '.tslider', function (e) {
+    if (e.button !== undefined && e.button !== 0) return;
+    e.preventDefault();
+    var slider = this, onHandle = $(e.target).closest('.ts-handle').length > 0;
+    var hr = $(slider).find('.ts-handle')[0].getBoundingClientRect();
+    var offset = onHandle ? (hr.left + hr.width / 2) - e.clientX : 0;   // grabbing the handle does not make it jump to the pointer
+    var startX = e.clientX, moved = false;
+    try { slider.setPointerCapture(e.pointerId); } catch (err) {}
+    $(slider).addClass('dragging');
+    if (!onHandle) setValue(valueAt(e.clientX), 'glide');
+    function move(ev) {
+      if (!moved && Math.abs(ev.clientX - startX) < 3) return;
+      moved = true; setValue(valueAt(ev.clientX, offset), 'drag');
+    }
+    function up() {
+      $(slider).off('pointermove.ts pointerup.ts pointercancel.ts').removeClass('dragging');
+      if (moved) commit(true);
+    }
+    $(slider).on('pointermove.ts', move).on('pointerup.ts pointercancel.ts', up);
+  });
+  // Keyboard: arrows 0.5, with Shift 0.1; Page keys 2; Home and End go to the ends
+  $(document).on('keydown', '.ts-handle', function (e) {
+    var k = e.key, d = null, big = e.shiftKey ? 0.1 : 0.5;
+    if (k === 'ArrowRight' || k === 'ArrowUp') d = big; else if (k === 'ArrowLeft' || k === 'ArrowDown') d = -big;
+    else if (k === 'PageUp') d = 2; else if (k === 'PageDown') d = -2;
+    else if (k === 'Home') { e.preventDefault(); return setValue(MIN, 'glide'); }
+    else if (k === 'End') { e.preventDefault(); return setValue(MAX, 'glide'); }
+    if (d === null) return;
+    e.preventDefault(); setValue(target + d, 'drag');
+  });
+  $(document).on('click', '.temp-chip', function () { setValue(Number($(this).data('v')), 'glide'); });
+  // Typing a value: Enter or leaving the box applies it (kept within -8 to 8, to 0.1); Escape puts the old value back; arrows nudge it
+  function parseTemp(str) {
+    var v = parseFloat(String(str).replace(/\u2212|\u2013/g, '-').replace(',', '.').replace(/[^0-9.+\-]/g, ''));
+    return isNaN(v) ? null : v;
+  }
+  function applyTyped(inp) { var v = parseTemp(inp.value); if (v === null) { inp.value = fmt(target); return; } setValue(v, 'glide'); inp.value = fmt(target); }
+  $(document).on('keydown', '#temp_value', function (e) {
+    if (e.key === 'Enter') { e.preventDefault(); applyTyped(this); this.select(); }
+    else if (e.key === 'Escape') { this.value = fmt(target); this.blur(); }
+    else if (e.key === 'ArrowUp' || e.key === 'ArrowDown') {
+      e.preventDefault(); var base = parseTemp(this.value); if (base === null) base = target;
+      setValue(base + (e.key === 'ArrowUp' ? 1 : -1) * (e.shiftKey ? 1 : 0.1), 'drag'); this.value = fmt(target);
+    }
+  });
+  $(document).on('blur', '#temp_value', function () { applyTyped(this); });
+  $(document).on('focus', '#temp_value', function () { var el = this; setTimeout(function () { el.select(); }, 0); });
+  // The server (a preset, Reset, loaded settings or a link) changed the number box: follow it
+  $(document).on('change', '#temp_delta', function () {
+    if (selfChange) return;
+    var v = parseFloat(this.value); setValue(isNaN(v) ? 0 : v, 'external');
+  });
+  $(function () {
+    var inp = document.getElementById('temp_delta'), v = inp ? parseFloat(inp.value) : 0;
+    target = clamp(isNaN(v) ? 0 : v); paint(target); ui(target);
+  });
+})();
+
+
+// Temperature on/off switch. The hidden checkbox #temp_on holds the state; the button flips it. Touching any temperature control
+// switches it on, so a change is never made while the section is off by accident.
+(function () {
+  function setOn(on) {
+    var cb = document.getElementById('temp_on'); if (!cb || cb.checked === on) return;
+    cb.checked = on; $(cb).trigger('change');
+  }
+  function mirror() {
+    var cb = document.getElementById('temp_on'); if (!cb) return;
+    $('.temp-switch').attr('aria-checked', cb.checked ? 'true' : 'false');
+    if (window.tempBadge) window.tempBadge();
+  }
+  $(document).on('click', '.temp-switch', function (e) {
+    e.preventDefault(); e.stopPropagation();
+    var cb = document.getElementById('temp_on'); setOn(!cb.checked); mirror();
+  });
+  window.tempSetOn = function (on) { setOn(on); mirror(); };
+  $(document).on('change', '#temp_on', mirror);
+  $(document).on('shiny:updateinput', function () { setTimeout(mirror, 0); });
+  $(document).on('mousedown touchstart keydown change', '.temp-body', function (e) {
+    if (e.type === 'change' && !e.originalEvent) return;   // changes made by code (presets, loaded settings) do not count
+    setOn(true); mirror();
+  });
+  $(mirror);
+})();
+
+// Smooth resizing: when the content of a .smooth-h box is replaced or swapped (the temperature description when another curve is
+// chosen, the fields under "Baseline and settings"), the box grows or shrinks to its new height instead of snapping, so everything
+// below slides along with it.
+(function () {
+  function track(el) {
+    var prev = el.getBoundingClientRect().height, anim = null;
+    // Keep the last settled height up to date, including while the box is hidden or opened by something else
+    new ResizeObserver(function () { if (!anim) prev = el.getBoundingClientRect().height; }).observe(el);
+    new MutationObserver(function () {
+      if (!el.animate || window.matchMedia('(prefers-reduced-motion: reduce)').matches) return;
+      var start = anim ? el.getBoundingClientRect().height : prev;   // a change during an animation continues from where it is
+      if (anim) { anim.cancel(); anim = null; }
+      var end = el.getBoundingClientRect().height;                   // the new natural height
+      if (!start && !end || Math.abs(start - end) < 1) return;
+      if (!el.offsetParent && !end) return;
+      anim = el.animate([{height: start + 'px'}, {height: end + 'px'}], {duration: 300, easing: 'cubic-bezier(.4,0,.2,1)'});
+      var mine = anim;
+      mine.onfinish = mine.oncancel = function () { if (anim === mine) { anim = null; prev = el.getBoundingClientRect().height; } };
+    }).observe(el, {childList: true, subtree: true, characterData: true, attributes: true, attributeFilter: ['style', 'class']});
+  }
+  $(function () { $('.smooth-h').each(function () { track(this); }); });
+})();
+
+
+// Drag boxes (brushes) on the forecast and survival charts: remove the box when the app asks, even if Shiny's own reset missed it
+$(function () {
+  Shiny.addCustomMessageHandler('clearBrushes', function (plotIds) {
+    [].concat(plotIds).forEach(function (id) { $('#' + id + '_brush').remove(); });
+  });
+});
+
+
+// Toast: a short message with one action (Undo), fixed near the bottom of the window so it never pushes the page around.
+(function () {
+  var timer = null;
+  function hide() { $('.pv-toast').removeClass('on'); clearTimeout(timer); }
+  Shiny.addCustomMessageHandler('toast', function (m) {
+    var t = $('.pv-toast');
+    if (!t.length) t = $('<div class="pv-toast" role="status" aria-live="polite"><span class="pv-toast-text"></span>' +
+                         '<button type="button" class="pv-toast-btn"></button>' +
+                         '<button type="button" class="pv-toast-x" aria-label="Dismiss">&times;</button><span class="pv-toast-bar"></span></div>').appendTo('body');
+    t.removeClass('err warn').addClass(m.kind === 'error' ? 'err' : (m.kind === 'warn' ? 'warn' : ''));
+    t.find('.pv-toast-text').text(m.text);
+    t.find('.pv-toast-btn').text(m.action || '').toggle(!!m.action).data('input', m.input || '');
+    t.find('.pv-toast-bar').css('animation-duration', (m.ms || 8000) + 'ms');
+    t.removeClass('on'); void t[0].offsetWidth;                  // restart the entrance and the countdown bar
+    t.addClass('on'); clearTimeout(timer); timer = setTimeout(hide, m.ms || 8000);
+  });
+  $(document).on('click', '.pv-toast-x', hide);
+  $(document).on('click', '.pv-toast-btn', function () {
+    var id = $(this).data('input'); if (id) Shiny.setInputValue(id, Date.now(), {priority: 'event'});
+    hide();
+  });
+  $(document).on('keydown', function (e) { if (e.key === 'Escape') hide(); });
+})();
+
+
+// Remember my place: the tab I was on, how far I had scrolled on each tab, and which parts of the page I had opened (assumption cards,
+// Temperature, Past runs, the linking section). It is kept in this browser only and applied when the page is opened again; Start over
+// clears it. Scroll positions are also kept per tab while using the app, so coming back to a tab puts you where you left it.
+(function () {
+  var KEY = 'vc_ui', st = {tab: null, scroll: {}, open: []}, userMoved = false, restoring = true;
+  try { var saved = JSON.parse(localStorage.getItem(KEY) || 'null'); if (saved && typeof saved === 'object') st = $.extend(st, saved); } catch (e) {}
+  function scroller() {
+    var tc = $('.tabbable > .tab-content')[0];
+    return tc && getComputedStyle(tc).overflowY !== 'visible' && tc.scrollHeight > tc.clientHeight + 1 ? tc : null;
+  }
+  function getY() { var s = scroller(); return s ? s.scrollTop : (window.pageYOffset || 0); }
+  function setY(y) { var s = scroller(); if (s) s.scrollTop = y; else window.scrollTo(0, y); }
+  function openIds() {
+    var ids = [];
+    $('.assump-card.open').each(function () { if (this.id) ids.push('#' + this.id); });
+    $('.temp-section[open]').each(function () { ids.push('.temp-section'); });
+    $('.temp-sens[open]').each(function () { ids.push('.temp-sens'); });
+    $('.history-box.open').each(function () { ids.push('.history-box'); });
+    $('.assump-section.adv-open').each(function () { if (this.id) ids.push('#' + this.id); });
+    return ids;
+  }
+  var timer = null;
+  function save() {
+    clearTimeout(timer);
+    timer = setTimeout(function () {
+      if (restoring) return;
+      var tab = $('#tabs li.active a').data('value'); if (tab) { st.tab = tab; st.scroll[tab] = getY(); }
+      st.open = openIds();
+      try { localStorage.setItem(KEY, JSON.stringify(st)); } catch (e) {}
+    }, 250);
+  }
+  function applyOpen() {
+    (st.open || []).forEach(function (sel) {
+      var el = $(sel).first(); if (!el.length) return;
+      if (el.is('details')) el.prop('open', true);
+      else if (el.hasClass('assump-card')) el.addClass('open').find('.assump-toggle').attr('aria-expanded', 'true');
+      else if (el.hasClass('history-box')) { el.addClass('open').find('.history-head').attr('aria-expanded', 'true'); }
+      else if (el.hasClass('assump-section')) el.addClass('adv-open');
+    });
+  }
+  // Put the scroll back once the tab has content tall enough to scroll to; give up if the user scrolls first
+  function restoreScroll(y) {
+    if (!y) return;
+    var tries = 0, t = setInterval(function () {
+      if (userMoved || ++tries > 40) { clearInterval(t); return; }
+      setY(y);
+      if (Math.abs(getY() - y) < 2) clearInterval(t);
+    }, 400);
+  }
+  $(document).on('wheel touchstart keydown mousedown', function () { userMoved = true; });
+  $(document).on('show.bs.tab', 'a[data-toggle="tab"]', function (e) {
+    var prev = e.relatedTarget && $(e.relatedTarget).data('value');
+    if (prev && !restoring) st.scroll[prev] = getY();
+  });
+  $(document).on('shown.bs.tab', 'a[data-toggle="tab"]', function () {
+    if (restoring) return;
+    var tab = $(this).data('value'); setY(st.scroll[tab] || 0); save();
+  });
+  document.addEventListener('scroll', function (e) { if (e.target.classList && e.target.classList.contains('tab-content')) save(); }, true);   // scroll does not bubble
+  $(window).on('scroll', save);
+  $(document).on('click change', save);
+  $(window).on('beforeunload pagehide', function () { restoring = false; clearTimeout(timer); var tab = $('#tabs li.active a').data('value'); if (tab) { st.tab = tab; st.scroll[tab] = getY(); } st.open = openIds(); try { localStorage.setItem(KEY, JSON.stringify(st)); } catch (e) {} });
+  // On load: reopen what was open, go back to the last tab, then to where I was on it once its results are drawn
+  $(document).on('shiny:connected', function () {
+    setTimeout(function () {
+      applyOpen();
+      var link = st.tab && $('#tabs a[data-value="' + st.tab + '"]');
+      var go = function () {
+        restoring = false;
+        if (st.tab) restoreScroll(st.scroll[st.tab] || 0);
+        save();
+      };
+      if (link && link.length && !link.parent().hasClass('active')) { link.tab('show'); setTimeout(go, 300); } else go();
+    }, 400);
+  });
+})();
+
+
+// Saving past runs: the app builds the file and sends its text here; this saves it through the browser.
+$(function () {
+  Shiny.addCustomMessageHandler('saveFile', function (m) {
+    var blob = new Blob([m.text], {type: (m.mime || 'text/plain') + ';charset=utf-8'}), url = URL.createObjectURL(blob);
+    var a = document.createElement('a'); a.href = url; a.download = m.name; document.body.appendChild(a); a.click();
+    setTimeout(function () { URL.revokeObjectURL(url); a.remove(); }, 1000);
+  });
+});
+$(document).on('click', '.scen-dl', function (e) {
+  e.stopPropagation();
+  Shiny.setInputValue('scenario_dl', Number($(this).closest('.scen-item').data('id')), {priority: 'event'});
+});
+$(document).on('click', '.scen-dlall', function () { Shiny.setInputValue('scenario_dl_all', Date.now(), {priority: 'event'}); });
+
+
+// "Fix before running": the app lists what would stop a run (an assumption with bad values, an invalid number of trials) under the Run
+// button. The button is held off while the list is not empty, and each line jumps to the thing to fix.
+(function () {
+  var blocked = false, REASON = 'Fix the items listed below first';
+  function esc(t) { return $('<div>').text(t).html(); }
+  function applyBlock() {
+    var b = $('#run'); if (!b.length) return;
+    b.toggleClass('blocked', blocked);
+    if (blocked) b.prop('disabled', true).attr({'aria-disabled': 'true', title: REASON});
+    else if (b.attr('title') === REASON) { b.prop('disabled', false).removeAttr('aria-disabled').attr('title', 'Shortcut: Cmd or Ctrl + Enter'); }
+  }
+  Shiny.addCustomMessageHandler('runIssues', function (m) {
+    var items = m.items || [], box = $('#run_issues');
+    blocked = items.length > 0;
+    if (!blocked) box.empty();
+    else {
+      var shown = items.slice(0, 4), html = '<div class="ri-head">' + (items.length === 1 ? 'One thing to fix before running' : items.length + ' things to fix before running') + '</div><ul>';
+      shown.forEach(function (it) { html += '<li><a href="#" class="ri-link" data-kind="' + esc(it.kind) + '" data-id="' + esc(it.id) + '">' + esc(it.label) + '</a>: ' + esc(it.msg) + '</li>'; });
+      if (items.length > shown.length) html += '<li class="ri-more">and ' + (items.length - shown.length) + ' more</li>';
+      box.html(html + '</ul>');
+    }
+    applyBlock();
+  });
+  // Something else (the run finishing) can re-enable the button; keep it held off while there is still something to fix
+  $(document).on('shiny:idle shiny:value', function () { if (blocked) setTimeout(applyBlock, 0); });
+  $(document).on('click', '.ri-link', function (e) {
+    e.preventDefault();
+    var kind = $(this).data('kind'), id = String($(this).data('id'));
+    if (kind === 'field') { var f = document.getElementById(id); if (f) { f.scrollIntoView({block: 'center', behavior: 'smooth'}); f.focus(); } return; }
+    if ($('#tabs li.active a').data('value') !== 'Define assumptions') $('#tabs a[data-value="Define assumptions"]').tab('show');
+    setTimeout(function () {
+      var card = $('#card_' + id); if (!card.length) return;
+      if (!card.hasClass('open')) card.find('.assump-toggle').first().trigger('click');
+      card[0].scrollIntoView({block: 'center', behavior: 'smooth'});
+      card.addClass('focus-flash'); setTimeout(function () { card.removeClass('focus-flash'); }, 1600);
+    }, 200);
+  });
+})();
+
+// One-time tips on the charts that can be dragged. They go away with the x, or as soon as the chart is used, and stay away.
+(function () {
+  var KEY = 'vc_hints', seen = {};
+  try { seen = JSON.parse(localStorage.getItem(KEY) || '{}') || {}; } catch (e) {}
+  function dismiss(key) {
+    var el = $('.chart-hint[data-hint="' + key + '"]'); if (!el.length || el.hasClass('gone')) return;
+    el.addClass('gone'); setTimeout(function () { el.hide(); }, 400);
+    seen[key] = 1; try { localStorage.setItem(KEY, JSON.stringify(seen)); } catch (e) {}
+  }
+  $(function () { $('.chart-hint').each(function () { if (seen[$(this).data('hint')]) $(this).hide(); }); });
+  $(document).on('click', '.chart-hint-x', function () { dismiss($(this).closest('.chart-hint').data('hint')); });
+  $(document).on('pointerup', '.tip-cell, .surv-wrap', function () {
+    var card = $(this).closest('.plot-card'); var h = card.find('.chart-hint').first();
+    if (h.length && ($(this).is('.surv-wrap') || $(this).find('#forecast_plot').length)) dismiss(h.data('hint'));
+  });
+})();
+
+
+// Shadow above the Run / Past runs panel only while the settings are actually sliding underneath it: the panel is "stuck" when it sits
+// higher than the place it would have in the normal flow, which a small marker placed just before it tells us.
+(function () {
+  $(function () {
+    var dock = $('.sidebar-dock')[0]; if (!dock) return;
+    var mark = document.createElement('div'); mark.className = 'dock-mark'; mark.style.cssText = 'height:0;margin:0;padding:0;border:0;';
+    dock.parentNode.insertBefore(mark, dock);
+    var scroller = dock.parentNode, queued = false;
+    function check() {
+      queued = false;
+      // the marker sits where the panel would start, less the panel's top margin
+      var natural = mark.getBoundingClientRect().bottom + (parseFloat(getComputedStyle(dock).marginTop) || 0);
+      dock.classList.toggle('stuck', dock.getBoundingClientRect().top < natural - 1);
+    }
+    function queue() { if (!queued) { queued = true; requestAnimationFrame(check); setTimeout(check, 60); } }
+    scroller.addEventListener('scroll', queue, {passive: true});
+    window.addEventListener('resize', queue);
+    if (window.ResizeObserver) { var ro = new ResizeObserver(queue); ro.observe(dock); ro.observe(scroller); }
+    new MutationObserver(queue).observe(scroller, {childList: true, subtree: true, attributes: true});
+    queue();
+  });
+})();

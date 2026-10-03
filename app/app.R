@@ -213,9 +213,21 @@ draw_threshold <- function(ct, thresh) {
   col <- .pv$red
   abline(v = thresh, col = col, lwd = 2.5, lty = 3)
   usr <- par("usr")
-  text(thresh, usr[3] + 0.72 * (usr[4] - usr[3]),
-       sprintf("Ct = %s\n%.1f%% of trials above", format(thresh), 100 * mean(ct > thresh)),
-       pos = if (thresh > mean(usr[1:2])) 2 else 4, col = col, cex = 0.85, offset = 0.5)
+  lab <- sprintf("P(Ct > %s) = %.1f%%", format(thresh), 100 * mean(ct > thresh))
+  cex <- 0.95
+  w <- strwidth(lab, cex = cex); h <- strheight(lab, cex = cex)
+  gap <- 0.012 * (usr[2] - usr[1]); padx <- 0.5 * strwidth("m", cex = cex); pady <- 0.6 * h   # the two axes have different units
+  left <- thresh > mean(usr[1:2])                       # keep the label on the roomier side of the line
+  x1 <- if (left) thresh - gap - w - 2 * padx else thresh + gap
+  yc <- usr[3] + 0.88 * (usr[4] - usr[3])
+  rect(x1, yc - h / 2 - pady, x1 + w + 2 * padx, yc + h / 2 + pady, col = .pv$bg, border = col, lwd = 1.5)
+  text(x1 + padx, yc, lab, adj = c(0, 0.5), col = col, cex = cex, font = 2)
+}
+
+# Address of a file in www/ with its last-changed time added, so a browser holding an older copy fetches the new one
+asset_url <- function(f) {
+  t <- file.mtime(file.path("www", f))
+  if (is.na(t)) f else paste0(f, "?v=", format(t, "%Y%m%d%H%M%S"))
 }
 
 # Main plot colour, matched to the accent colour in www/pvec.css
@@ -262,7 +274,8 @@ draw_forecast <- function(ct, b, prev = NULL, run_labels = NULL, thresh = NA, bi
     hs   <- lapply(runs, function(x) if (diff(range(x)) > 0) hist(x, breaks = br, plot = FALSE))
     ytop <- max(c(1e-9, unlist(lapply(hs, function(h) if (!is.null(h)) h$density)))) * 1.1
     plot(NA, xlim = xlim, ylim = c(0, ytop), xlab = "Ct", ylab = "Density",
-         main = "Forecast of total vectorial capacity")
+         main = "")
+    fig_title("Forecast of total vectorial capacity", line = 2)
     for (k in 1:2) {
       if (!is.null(hs[[k]])) {
         plot(hs[[k]], freq = FALSE, add = TRUE, col = adjustcolor(cols[k], 0.55), border = .pv$bg)
@@ -275,9 +288,13 @@ draw_forecast <- function(ct, b, prev = NULL, run_labels = NULL, thresh = NA, bi
   }
   h  <- hist(ct, breaks = bins, plot = FALSE)
   xl <- range(h$breaks); if (has_thresh(thresh)) xl <- range(xl, thresh)
-  plot(h, xlim = xl, col = ifelse(h$mids >= b[1] & h$mids <= b[2], ACCENT, .pv$bar),
-       border = .pv$bg, main = "Forecast of total vectorial capacity", xlab = "Ct")
+  cols <- ifelse(h$mids >= b[1] & h$mids <= b[2], ACCENT, .pv$bar)
+  plot(h, xlim = xl, col = cols,
+       border = .pv$bg, main = "", xlab = "Ct")
+  fig_title("Forecast of total vectorial capacity", line = 2)
   abline(v = median(ct), lwd = 2, lty = 2, col = .pv$fg)
+  usr <- par("usr"); md <- median(ct)
+  text(md, usr[4], paste("Median", fmt3(md)), pos = 3, offset = 0.3, cex = 0.9, font = 2, col = .pv$fg, xpd = NA)   # a flag above the line, clear of the bars
   if (has_thresh(thresh)) draw_threshold(ct, thresh)
 }
 
@@ -587,7 +604,7 @@ snap_diff <- function(a, b) {
   tr <- function(v) format(suppressWarnings(as.numeric(gsub(",", "", g(v, "trials")))), big.mark = ",")
   if (!identical(tr(a), tr(b))) add("Trials", tr(a), tr(b))
   if (!identical(g(a, "seed"), g(b, "seed"))) add("Seed", g(a, "seed"), g(b, "seed"))
-  tmp <- function(v) { d <- suppressWarnings(as.numeric(g(v, "temp"))); if (is.na(d) || d == 0) "No change" else sprintf("%+g \u00b0C", d) }
+  tmp <- function(v) { d <- suppressWarnings(as.numeric(g(v, "temp"))); if (is.na(d) || d == 0 || toupper(g(v, "temp.on")) == "FALSE") "No change" else sprintf("%+g \u00b0C", d) }
   if (!identical(tmp(a), tmp(b))) add("Temperature change", tmp(a), tmp(b))
   cvn <- function(v) { k <- g(v, "temp.curve"); if (k %in% names(TEMP_CURVES)) sprintf("%s (from %s \u00b0C)", TEMP_CURVES[[k]]$label, g(v, "temp.ref")) else "Generic per-degree changes" }
   if (tmp(a) != "No change" || tmp(b) != "No change") if (!identical(cvn(a), cvn(b))) add("Temperature response", cvn(a), cvn(b))
@@ -669,6 +686,10 @@ ct_other_structure <- function(res, from, progress = function(done, n) {}, chunk
   }
   ct
 }
+
+# A bold title at the left edge of the whole figure instead of centred over the plot area
+fig_title <- function(txt, line = 1)
+  mtext(txt, side = 3, line = line, at = grconvertX(0.01, "ndc", "user"), adj = 0, font = 2, cex = 1.1, col = .pv$fg, xpd = NA)
 
 draw_sens <- function(res, metric = "prcc", sc = sens_contrib(res)) {
   pvec_par()
@@ -1234,7 +1255,7 @@ ui <- fluidPage(
   tags$button(id = "expand_sidebar", type = "button", class = "sidebar-arrow-open",
               title = "Show settings", `aria-label` = "Show settings", `aria-expanded` = "false",
               icon("chevron-right")),
-  tags$head(tags$link(rel = "stylesheet", type = "text/css", href = "pvec.css")),
+  tags$head(tags$link(rel = "stylesheet", type = "text/css", href = asset_url("pvec.css"))),
   div(class = "print-only", textOutput("run_status_print")),
   sidebarLayout(
     div(class = "col-sm-3",
@@ -1268,16 +1289,41 @@ ui <- fluidPage(
         column(6, div(class = "trials-box", textInput("n_iter", "Trials", "1,000"))),
         column(6, numericInput("seed", HTML(paste0("Seed ", as.character(actionLink("rand_seed", icon("shuffle"), title = "Pick a random seed")))), 1))),
       tags$details(class = "temp-section",
-        tags$summary(span(class = "temp-name", "Temperature"), span(class = "temp-optional", "optional"), uiOutput("temp_badge", inline = TRUE)),
+        tags$summary(span(class = "temp-name", "Temperature"), span(class = "temp-optional", "optional"), span(class = "temp-badge-wrap", `aria-live` = "polite", span(class = "temp-badge", id = "temp_badge")),
+          # On/off switch: the checkbox holds the state (so the server can set it), the button is what people click
+          tags$input(type = "checkbox", id = "temp_on", class = "temp-sw-input", tabindex = "-1", `aria-hidden` = "true"),
+          tags$button(type = "button", class = "temp-switch", role = "switch", `aria-checked` = "false", `aria-label` = "Apply the temperature change",
+                      title = "Turn the temperature change on or off without losing its settings",
+                      span(class = "temp-sw-knob"))),
         div(class = "temp-body",
           radioButtons("temp_curve", "Vector and pathogen",
                        choiceNames = list("Generic (editable)", tagList(tags$i("Aedes aegypti"), " \u00b7 dengue virus"),
                                           tagList(tags$i("Anopheles"), " \u00b7 ", tags$i("P. falciparum"))),
                        choiceValues = c("generic", "aedes_dengue", "anopheles_pf"), selected = "generic"),
-          sliderInput("temp_delta", "Change in temperature (\u00b0C)", min = -8, max = 8, value = 0, step = 0.5, width = "100%", ticks = FALSE),
-          uiOutput("temp_effect"),
+          div(class = "temp-slider is-zero",
+            div(class = "temp-head", span(class = "temp-head-label", "Change in temperature"),
+                span(class = "temp-value",
+                     tags$input(type = "text", id = "temp_value", class = "temp-input", value = "0", inputmode = "decimal", autocomplete = "off",
+                                maxlength = "6", `aria-label` = "Change in temperature in degrees Celsius. Type a value from minus 8 to 8.",
+                                title = "Type a value from \u22128 to 8"),
+                     span(class = "temp-unit", "\u00b0C"))),
+            # The value lives in a hidden number box (so Shiny, saving and presets treat it as a normal input); pvec.js draws the slider
+            tags$input(type = "number", id = "temp_delta", class = "temp-delta-input", value = 0, min = -8, max = 8, step = 0.1,
+                       tabindex = "-1", `aria-hidden` = "true"),
+            div(class = "tslider", id = "temp_slider",
+                div(class = "ts-track", div(class = "ts-fill")),
+                div(class = "ts-zero"),
+                tags$button(type = "button", class = "ts-handle", role = "slider", `aria-label` = "Change in temperature, degrees Celsius",
+                            `aria-valuemin` = "-8", `aria-valuemax` = "8", `aria-valuenow` = "0", `aria-valuetext` = "No change")),
+            div(class = "ts-scale", `aria-hidden` = "true", span("\u22128"), span("0"), span("8")),
+            div(class = "temp-chips", role = "group", `aria-label` = "Common temperature changes",
+                lapply(c(-4, -2, 0, 2, 4), function(v)
+                  tags$button(type = "button", class = "temp-chip", `data-v` = v,
+                              if (v == 0) "None" else paste0(if (v > 0) "+" else "\u2212", abs(v)))))),
+          uiOutput("temp_effect", class = "smooth-h"),
           tags$details(class = "fit-help temp-sens",
             tags$summary("Baseline and settings"),
+            div(class = "smooth-h",
             conditionalPanel("input.temp_curve != 'generic'",
               numericInput("temp_ref", "Baseline temperature (\u00b0C)", 27, step = 0.5, width = "100%"),
               p(class = "temp-note", "The temperature your assumptions describe. The slider moves away from it.")),
@@ -1285,10 +1331,10 @@ ui <- fluidPage(
               numericInput("temp_pe", "Incubation period (% per \u00b0C)", -10, step = 1, width = "100%"),
               numericInput("temp_pm", "Initial mortality a (% per \u00b0C)", 5, step = 1, width = "100%"),
               numericInput("temp_pa", "Biting rate (% per \u00b0C)", 3, step = 1, width = "100%"),
-              p(class = "temp-note", "Rough placeholders, not fitted curves. Pick a vector and pathogen above to use published curves."))))),
+              p(class = "temp-note", "Rough placeholders, not fitted curves. Pick a vector and pathogen above to use published curves.")))))),
       radioButtons("preset",
-        span("Load a preset ",
-          span(class = "help-tip", tabindex = "0", role = "note", `aria-label` = "About the presets", "?",
+        span("Assumption presets ",
+          span(class = "help-tip", tabindex = "0", role = "note", `aria-label` = "About the assumption presets", "?",
             span(class = "help-tip-text",
               strong("Literature: "), "each assumption is drawn from a probability distribution whose range comes from published estimates. Biting rate and vector competence use Beta, incubation period and mosquito density use Uniform, and the mortality parameters use truncated Normal. Results vary from trial to trial, so the forecast shows a distribution of Ct.",
               br(), br(),
@@ -1307,16 +1353,24 @@ ui <- fluidPage(
       div(class = "preset-vary", role = "status", `aria-live` = "polite", id = "preset_vary"),
       actionButton("reset_open", tagList(icon("rotate-left"), " Reset..."), class = "btn-default btn-sm reset-open", width = "100%")
      ),
+     div(class = "sidebar-dock",
      div(class = "run-dock",
         actionButton("run", "Run simulation", class = "btn-primary btn-lg", width = "100%",
                      title = "Shortcut: Cmd or Ctrl + Enter"),
+        div(class = "run-issues smooth-h", id = "run_issues", role = "status", `aria-live` = "polite"),
         uiOutput("stale_note"),
         div(class = "run-status", textOutput("run_status"))),
      div(class = "history-box",
-        div(class = "history-title-row", icon("clock-rotate-left"), span(class = "history-title", " Past runs")),
-        div(class = "history-sub", "Click a run to reload its settings.",
-            tags$button(type = "button", class = "scen-clear", "Clear all")),
-        uiOutput("scenario_list"))
+        div(class = "history-header",
+            div(class = "history-text",
+                div(class = "history-title-row", icon("clock-rotate-left"), span(class = "history-title", " Past runs")),
+                div(class = "history-sub", "Click a run to reload its settings.")),
+            span(class = "hist-actions",
+                 tags$button(type = "button", class = "hist-icon scen-dlall", `aria-label` = "Download all past runs",
+                             `data-tip` = "Download all past runs as one table (CSV)", icon("file-arrow-down")),
+                 tags$button(type = "button", class = "hist-icon scen-clear", `aria-label` = "Clear all past runs",
+                             `data-tip` = "Remove all past runs from the list (you can undo)", icon("trash-can")))),
+        uiOutput("scenario_list", class = "smooth-h")))
     ),
     mainPanel(width = 9,
       tabsetPanel(id = "tabs",
@@ -1364,7 +1418,7 @@ ui <- fluidPage(
           div(class = "assump-section", id = "sec_mortality",
             h4("Mortality schedule", span(class = "sec-count")),
             p(class = "sec-desc", "How quickly mosquitoes die as they age. The cards shown depend on the mortality model."),
-            uiOutput("ab_hint"),
+            uiOutput("ab_hint", class = "smooth-h"),
             div(class = "cards-grid",
               assumption_ui("mort_a", mort_specs$logistic$mort_a),
               conditionalPanel("input.mort_model != 'exponential'", assumption_ui("mort_b", mort_specs$logistic$mort_b)),
@@ -1392,31 +1446,38 @@ ui <- fluidPage(
                                       selected = all_setting_ids[2])),
                 column(3, numericInput("corr_rho", "Rank correlation (-0.95 to 0.95)", 0, min = -0.95, max = 0.95, step = 0.05)),
                 column(3, div(class = "corr-add", actionButton("corr_add", "Add correlation", class = "btn-default btn-sm")))),
-              uiOutput("corr_list"),
+              uiOutput("corr_list", class = "smooth-h"),
               tags$hr(),
               div(class = "settings-io",
                 fileInput("up_file", NULL, buttonLabel = "Upload parameter draws (CSV)", placeholder = "",
                           accept = ".csv", width = "auto"),
                 downloadButton("dl_template", "Download template", class = "btn-sm")),
-              uiOutput("up_status")))))),
+              uiOutput("up_status", class = "smooth-h")))))),
         tabPanel("Forecast",
           empty_state("Run a simulation to see the forecast of Ct, the chance it exceeds a threshold, and the summary statistics."),
           div(class = "results-body",
           uiOutput("ctx_forecast"),
           uiOutput("insight_forecast"),
-          uiOutput("forecast_summary"),
+          uiOutput("forecast_summary", class = "smooth-h"),
           how_to("How to read this chart",
             p("Each bar counts how many trials gave a Ct in that range. The dashed line is the median. Dark bars fall inside",
-              "the certainty range you set (all bars when none is set). Type a threshold, or click the chart to place one,",
-              "to see the chance that Ct exceeds it. More bins show finer detail but a noisier shape.")),
+              "the certainty range you set (all bars when none is set). Drag across the chart to set the range, or type it.",
+              "Type a threshold, or click the chart to place one, to see the chance that Ct exceeds it.",
+              "More bins show finer detail but a noisier shape.")),
           div(class = "plot-card",
             div(class = "plot-controls no-print",
               numericInput("cert_lo", "Range from", NA, step = 0.1, width = "150px"),
               numericInput("cert_hi", "Range to", NA, step = 0.1, width = "150px"),
               numericInput("thresh", "Threshold", NA, step = 0.1, width = "150px"),
               sliderInput("bins", "Bins", 10, 100, 50, step = 5, width = "170px", ticks = FALSE)),
-            uiOutput("cert_text"),
-            plotOutput("forecast_plot", height = 400, click = "forecast_click"),
+            uiOutput("cert_text", class = "smooth-h"),
+            div(class = "chart-hint no-print", `data-hint` = "forecast", icon("hand-pointer"), span("Tip: drag across the chart to set a range, or click it to place a threshold."),
+                tags$button(type = "button", class = "chart-hint-x", `aria-label` = "Dismiss this tip", HTML("&times;"))),
+            div(class = "tip-cell",
+              plotOutput("forecast_plot", height = 400, click = "forecast_click",
+                         brush = brushOpts("forecast_brush", direction = "x", resetOnNew = FALSE, delay = 300, delayType = "debounce",
+                                           fill = "#2b6cb0", opacity = 0.15, stroke = "#2b6cb0")),
+              uiOutput("forecast_reset", class = "reset-float")),
             div(class = "dl-row",
               dl_menu(dl_img_item("forecast_plot", "forecast_Ct.png"),
                       tags$li(downloadLink("dl_csv", "Results (CSV)")),
@@ -1431,23 +1492,23 @@ ui <- fluidPage(
             div(class = "tool-panels",
               tool_panel("extreme", "Most extreme trials",
                 p(class = "tab-lead", "The five trials with the highest Ct, with every input's value and where it sits among that assumption's draws."),
-                uiOutput("extreme_ui")),
+                uiOutput("extreme_ui", class = "smooth-h")),
               tool_panel("r0", "Convert Ct to R\u2080 (optional)",
                 p(class = "tab-lead", "R\u2080 here is the number of new human infections one infectious person causes through mosquitoes: Ct \u00d7 the chance an infectious bite infects a person \u00d7 the days a person is infectious. These two numbers are extra assumptions, not part of the model."),
                 div(class = "plot-controls",
                   numericInput("r0_b", "Chance an infectious bite infects a person (0 to 1)", NA, min = 0, max = 1, step = 0.05, width = "230px"),
                   numericInput("r0_dur", "Days a person is infectious", NA, min = 0, step = 1, width = "190px")),
-                uiOutput("r0_ui")),
+                uiOutput("r0_ui", class = "smooth-h")),
               tool_panel("struct", "Run the same draws on the other age structure",
                 p(class = "tab-lead", "Runs the same parameter draws through the other population age structure, so the difference you see is the structure alone."),
                 actionButton("struct_go", "Run the other age structure", class = "btn-default btn-sm"),
-                uiOutput("struct_out")),
+                uiOutput("struct_out", class = "smooth-h")),
               tool_panel("compare", "Compare to another run",
                 p(class = "tab-lead", "Pick any two of your runs, not only the latest. The first is drawn in blue and the second in orange."),
                 div(class = "plot-controls",
                   selectInput("compare_a", "Run", choices = NULL, width = "360px"),
                   selectInput("compare_run", "Compare it with", c("Choose a run" = "none"), width = "360px")),
-                uiOutput("compare_out")))),
+                uiOutput("compare_out", class = "smooth-h")))),
           div(class = "table-tools", copy_btn("stats")),
           div(class = "stats-table", tableOutput("stats")))),
         tabPanel("Sensitivity",
@@ -1467,8 +1528,9 @@ ui <- fluidPage(
             div(class = "no-print seg-wrap",
               radioButtons("sens_metric", NULL, inline = TRUE, selected = "prcc",
                            c("PRCC" = "prcc", "Rank correlation" = "rho", "Share of squared correlation" = "contrib", "Share of variance" = "var"))),
-            uiOutput("sens_caption"),
-            plotOutput("sens_plot", height = 400, click = "sens_click"),
+            uiOutput("sens_caption", class = "smooth-h"),
+            div(class = "tip-cell",
+              plotOutput("sens_plot", height = 400, click = "sens_click")),
             div(class = "dl-row", dl_menu(dl_img_item("sens_plot", "sensitivity.png")))))),
         tabPanel("Assumption draws",
           empty_state("Run a simulation to see the values drawn for each assumption."),
@@ -1505,12 +1567,19 @@ ui <- fluidPage(
             div(class = "plot-controls no-print",
               selectInput("surv_n", "Lines shown", c("10" = 10, "25" = 25, "50" = 50, "100 (all)" = 100), 100, width = "140px"),
               sliderInput("surv_age", "Ages shown (days)", 10, 150, 80, step = 10, width = "220px", ticks = FALSE)),
+            div(class = "chart-hint no-print", `data-hint` = "survival", icon("hand-pointer"), span("Tip: drag across a chart to zoom the age axis."),
+                tags$button(type = "button", class = "chart-hint-x", `aria-label` = "Dismiss this tip", HTML("&times;"))),
             div(class = "surv-wrap", id = "surv_wrap",
+              uiOutput("surv_reset", class = "reset-float"),
               conditionalPanel("input.surv_view != 'hazard'", class = "combine-img surv-cell",
-                plotOutput("surv_plot_s", height = 450, hover = hoverOpts("surv_hover_s", delay = 120, delayType = "debounce")),
+                plotOutput("surv_plot_s", height = 450, hover = hoverOpts("surv_hover_s", delay = 120, delayType = "debounce"),
+                           brush = brushOpts("surv_brush_s", direction = "x", resetOnNew = TRUE, delay = 400, delayType = "debounce",
+                                             fill = "#2b6cb0", opacity = 0.15, stroke = "#2b6cb0")),
                 uiOutput("surv_tip_s")),
               conditionalPanel("input.surv_view != 'surv'", class = "combine-img surv-cell",
-                plotOutput("surv_plot_h", height = 450, hover = hoverOpts("surv_hover_h", delay = 120, delayType = "debounce")),
+                plotOutput("surv_plot_h", height = 450, hover = hoverOpts("surv_hover_h", delay = 120, delayType = "debounce"),
+                           brush = brushOpts("surv_brush_h", direction = "x", resetOnNew = TRUE, delay = 400, delayType = "debounce",
+                                             fill = "#2b6cb0", opacity = 0.15, stroke = "#2b6cb0")),
                 uiOutput("surv_tip_h"))),
             div(class = "dl-row", dl_menu(dl_img_item("surv_wrap", "survival_curves.png", cls = "dl-grid")))),
           div(class = "plot-card",
@@ -1708,11 +1777,18 @@ ui <- fluidPage(
       HTML(paste0("&copy; ", sub(".*, ", "", LAST_UPDATED), " Jackson R. Strand &nbsp;&middot;&nbsp; Last updated: ", LAST_UPDATED))),
   # Page behaviour (notification panel, cards, jump bar, share link, downloads) is in www/pvec.js,
   # and the styling is in www/pvec.css, so the browser can cache both
-  tags$script(src = "pvec.js")
+  tags$script(src = asset_url("pvec.js"))
 )
 
 # ---- Server ----
 server <- function(input, output, session) {
+
+  # Messages to the user appear as a toast fixed near the bottom of the window (pvec.js), never in the sidebar where they would push
+  # things around. A toast can carry one action (Undo); kind is "info", "warn" or "error".
+  toast <- function(text, action = NULL, input = NULL, ms = 8000, kind = "info")
+    session$sendCustomMessage("toast", list(text = text, action = action, input = input, ms = ms, kind = kind))
+  notify <- function(text, type = "message", duration = 6)
+    toast(text, kind = switch(type, error = "error", warning = "warn", "info"), ms = max(duration, if (type == "error") 8 else 4) * 1000)
 
   get_spec <- function(id) {
     s <- lapply(fields, function(f) input[[paste0(id, "_", f)]])
@@ -1753,7 +1829,7 @@ server <- function(input, output, session) {
            else if (identical(get_spec(a)$dist, "Fixed")) sprintf("%s is fixed, so it cannot be correlated. Give it a distribution first.", labels[[a]])
            else if (identical(get_spec(b)$dist, "Fixed")) sprintf("%s is fixed, so it cannot be correlated. Give it a distribution first.", labels[[b]])
            else if (nrow(corr_pairs()) >= 15) "You can add at most 15 correlations."
-    if (!is.null(bad)) { showNotification(bad, type = "error", duration = 6); return() }
+    if (!is.null(bad)) { notify(bad, type = "error", duration = 6); return() }
     cp <- corr_pairs()
     cp <- cp[!((cp$a == a & cp$b == b) | (cp$a == b & cp$b == a)), , drop = FALSE]   # a new value replaces an old one
     corr_pairs(rbind(cp, data.frame(a = a, b = b, rho = rho, stringsAsFactors = FALSE)))
@@ -1785,10 +1861,10 @@ server <- function(input, output, session) {
 
   observeEvent(input$up_file, {
     df <- tryCatch(read.csv(input$up_file$datapath, comment.char = "#", stringsAsFactors = FALSE), error = function(e) NULL)
-    if (is.null(df) || !nrow(df)) { showNotification("That file could not be read as a CSV with a header row.", type = "error", duration = 8); return() }
+    if (is.null(df) || !nrow(df)) { notify("That file could not be read as a CSV with a header row.", type = "error", duration = 8); return() }
     use <- intersect(names(df), setting_ids)
     if (!length(use)) {
-      showNotification(sprintf("No column names matched. Use these names: %s. The template has them.", paste(setting_ids, collapse = ", ")),
+      notify(sprintf("No column names matched. Use these names: %s. The template has them.", paste(setting_ids, collapse = ", ")),
                        type = "error", duration = 10); return()
     }
     df[use] <- lapply(df[use], function(x) suppressWarnings(as.numeric(x)))
@@ -1797,8 +1873,8 @@ server <- function(input, output, session) {
       if (anyNA(x) || any(!is.finite(x))) sprintf("%s has blank, non-numeric or infinite values", id)
       else if (any(x < min_ok[[id]])) sprintf("%s has values below %s", id, min_ok[[id]])
     }))
-    if (length(probs)) { showNotification(paste("The file was not used:", paste(probs, collapse = "; ")), type = "error", duration = 10); return() }
-    if (nrow(df) < 20) { showNotification("The file needs at least 20 rows.", type = "error", duration = 8); return() }
+    if (length(probs)) { notify(paste("The file was not used:", paste(probs, collapse = "; ")), type = "error", duration = 10); return() }
+    if (nrow(df) < 20) { notify("The file needs at least 20 rows.", type = "error", duration = 8); return() }
     uploaded(list(df = df[use], name = input$up_file$name, ignored = setdiff(names(df), use),
                   sig = list(input$up_file$name, nrow(df), sum(unlist(df[use])))))
   })
@@ -1849,7 +1925,9 @@ server <- function(input, output, session) {
     # Temperature what-if (absent in older files and links, which means no change)
     cv <- get1("temp.curve"); updateRadioButtons(session, "temp_curve", selected = if (!is.na(cv) && cv %in% c("generic", names(TEMP_CURVES))) cv else "generic")
     if (!is.na(num("temp.ref"))) updateNumericInput(session, "temp_ref", value = num("temp.ref"))
-    td <- num("temp"); updateSliderInput(session, "temp_delta", value = if (is.na(td)) 0 else max(-8, min(8, td)))
+    td <- num("temp"); updateNumericInput(session, "temp_delta", value = if (is.na(td)) 0 else max(-8, min(8, td)))
+    # Files and links from before the switch existed: on whenever there was a change
+    on <- toupper(get1("temp.on")); updateCheckboxInput(session, "temp_on", value = if (on %in% c("TRUE", "FALSE")) on == "TRUE" else (!is.na(td) && td != 0))
     for (k in list(c("temp.pe", "temp_pe", -10), c("temp.pm", "temp_pm", 5), c("temp.pa", "temp_pa", 3)))
       updateNumericInput(session, k[2], value = if (is.na(num(k[1]))) as.numeric(k[3]) else num(k[1]))
     for (id in setting_ids) {
@@ -1881,7 +1959,7 @@ server <- function(input, output, session) {
   settings_rows <- function() {
     rows <- list(model = input$mort_model, structure = input$structure,
                  trials = n_trials(), seed = input$seed,
-                 temp = input$temp_delta, temp.curve = input$temp_curve, temp.ref = input$temp_ref,
+                 temp = input$temp_delta, temp.on = isTRUE(input$temp_on), temp.curve = input$temp_curve, temp.ref = input$temp_ref,
                  temp.pe = input$temp_pe, temp.pm = input$temp_pm, temp.pa = input$temp_pa)
     cp <- corr_pairs()
     for (i in seq_len(nrow(cp))) rows[[paste0("corr.", i)]] <- sprintf("%s;%s;%s", cp$a[i], cp$b[i], cp$rho[i])
@@ -1908,7 +1986,7 @@ server <- function(input, output, session) {
     ok <- !is.null(v) && all(c("model", "structure") %in% names(v)) &&
           v[["model"]] %in% c("logistic", "gompertz", "exponential")
     if (!ok) {
-      showNotification(sprintf("That %s is not a settings %s saved from this app.", what, what),
+      notify(sprintf("That %s is not a settings %s saved from this app.", what, what),
                        type = "error", duration = 8)
       return(invisible())
     }
@@ -1916,7 +1994,7 @@ server <- function(input, output, session) {
       loaded(v)
       updateRadioButtons(session, "mort_model", selected = v[["model"]])
     } else apply_cfg(v)
-    if (!quiet) showNotification("Settings loaded. Click Run to use them.", type = "message", duration = 6)
+    if (!quiet) notify("Settings loaded. Click Run to use them.", type = "message", duration = 6)
   }
 
   observeEvent(input$load_settings, {
@@ -1993,11 +2071,20 @@ server <- function(input, output, session) {
     }
   }
   observeEvent(input$preset, apply_preset(input$preset), ignoreInit = TRUE)
+  # Reset values to the preset applies at once; a toast offers Undo, which puts back everything as it was
+  reset_snap <- reactiveVal(NULL)
+  observeEvent(input$undo_reset, {
+    v <- reset_snap(); req(v)
+    apply_loaded(v, "settings", quiet = TRUE); reset_snap(NULL)
+  })
   observeEvent(input$reset_preset, {
     removeModal()
+    reset_snap(settings_rows())
     apply_preset(input$preset)
     updateTextInput(session, "n_iter", value = "1,000")
-    updateSliderInput(session, "temp_delta", value = 0)
+    updateNumericInput(session, "temp_delta", value = 0)
+    updateCheckboxInput(session, "temp_on", value = FALSE)
+    toast("Values reset to the preset", "Undo", "undo_reset")
   })
 
   # The preset's own spec for one assumption (what "unedited" means)
@@ -2054,21 +2141,39 @@ server <- function(input, output, session) {
     if (length(n) != 1 || is.na(n) || n < MIN_TRIALS || n > MAX_TRIALS) NA_integer_ else as.integer(round(n))
   })
 
+  # The part of the temperature section that counts as a setting: nothing while it is off, or on the generic curve at 0 (that is
+  # the same as no temperature); otherwise the change plus the settings of the chosen curve (the baseline for a published curve,
+  # the percent changes for the generic one). Choosing a published curve marks the results as out of date, going back to the
+  # generic curve at 0 does not.
+  temp_sig <- function() {
+    d <- input$temp_delta; if (is.null(d) || is.na(d)) d <- 0
+    if (!isTRUE(input$temp_on)) return("none")
+    if (input$temp_curve %in% names(TEMP_CURVES)) list(d, input$temp_curve, input$temp_ref)   # choosing a published curve counts as a setting
+    else if (d == 0) "none"                                                                  # generic at 0 is the same as no temperature
+    else list(d, "generic", input$temp_pe, input$temp_pm, input$temp_pa)
+  }
+
   # Snapshot of everything that feeds a run, to tell when results are out of date
   cur_sig_now <- reactive({
     ids <- active_ids(input$mort_model)
     list(model = input$mort_model, structure = input$structure,
          n = n_trials(), seed = input$seed, corr = corr_pairs(), upload = uploaded()$sig,
-         temp = list(input$temp_delta, input$temp_curve, input$temp_ref, input$temp_pe, input$temp_pm, input$temp_pa),
+         temp = temp_sig(),
          specs = lapply(setNames(ids, ids), get_spec))
   })
   # The warning waits for a pause in typing. A run records the exact current snapshot, not the delayed one.
   cur_sig <- debounce(cur_sig_now, 300)
   run_sig <- reactiveVal(NULL)
 
+  # Whether the results are out of date, as a plain TRUE or FALSE. A reactiveVal only tells its readers when the value actually
+  # flips, so the "settings changed" note and chip are drawn once and stay put while more settings are edited, rather than being
+  # redrawn (and flashing) on every change.
+  stale_flag <- reactiveVal(FALSE)
+  observe(stale_flag(!is.null(run_sig()) && !identical(cur_sig(), run_sig())))
+
   output$stale_note <- renderUI({
     req(run_sig())
-    if (!identical(cur_sig(), run_sig()))
+    if (stale_flag())
       div(class = "stale-note", "\u26a0 Settings changed since the last run. Click Run to update the results.")
   })
 
@@ -2093,7 +2198,7 @@ server <- function(input, output, session) {
     if (is.na(n_trials()))
       problems <- c(problems, sprintf("Enter a number of trials between %s and %s", MIN_TRIALS, format(MAX_TRIALS, big.mark = ",")))
     if (!is.null(problems)) {
-      showNotification(paste(problems, collapse = ". "), type = "error", duration = 8)
+      notify(paste(problems, collapse = ". "), type = "error", duration = 8)
       session$sendCustomMessage("scrollToError", list())
       return()
     }
@@ -2101,7 +2206,7 @@ server <- function(input, output, session) {
     t0 <- Sys.time()
     snap <- settings_rows()
     n  <- n_trials()
-    dT <- if (is.null(input$temp_delta) || is.na(input$temp_delta)) 0 else input$temp_delta
+    dT <- if (!isTRUE(input$temp_on) || is.null(input$temp_delta) || is.na(input$temp_delta)) 0 else input$temp_delta
     tadj <- temperature_adjust(input$temp_curve, input$temp_ref, dT, input$temp_pe, input$temp_pm, input$temp_pa)
     adj <- if (!is.null(tadj)) tadj$mult
     run <- withProgress(message = "Running trials", value = 0,
@@ -2173,7 +2278,7 @@ server <- function(input, output, session) {
   observeEvent(input$ab_link, {
     cp <- corr_pairs()
     corr_pairs(rbind(cp, data.frame(a = "mort_a", b = "mort_b", rho = -0.5, stringsAsFactors = FALSE)))
-    showNotification("Linked mortality a and b (\u03c1 = \u22120.5). Click Run to use it.", type = "message", duration = 6)
+    notify("Linked mortality a and b (\u03c1 = \u22120.5). Click Run to use it.", type = "message", duration = 6)
   })
   observeEvent(input$ab_dismiss, ab_dismissed(TRUE))
 
@@ -2182,10 +2287,6 @@ server <- function(input, output, session) {
     if (input$temp_curve %in% names(TEMP_CURVES)) updateNumericInput(session, "temp_ref", value = TEMP_CURVES[[input$temp_curve]]$ref)
   }, ignoreInit = TRUE)
   temp_adj <- reactive(temperature_adjust(input$temp_curve, input$temp_ref, input$temp_delta, input$temp_pe, input$temp_pm, input$temp_pa))
-  output$temp_badge <- renderUI({
-    d <- input$temp_delta
-    if (!is.null(d) && !is.na(d) && d != 0) span(class = "temp-badge", sprintf("%+g \u00b0C", d))
-  })
   output$temp_effect <- renderUI({
     cv <- input$temp_curve; a <- temp_adj()
     cite <- if (identical(cv, "aedes_dengue")) p(class = "temp-note", HTML("Curves from Liu-Helmersson et al. (2014, <i>PLoS ONE</i> 9:e89783), fitted to laboratory data for <i>Aedes aegypti</i> and dengue virus."))
@@ -2207,14 +2308,14 @@ server <- function(input, output, session) {
   scen_id   <- reactiveVal(0)
   observeEvent(input$scenario_load, {
     sc <- Filter(function(x) x$id == input$scenario_load, scenarios())
-    if (length(sc)) apply_loaded(sc[[1]]$snap, "run")
+    if (length(sc)) apply_loaded(sc[[1]]$snap, "run", quiet = TRUE)   # the run card shows its own message (see pvec.js)
   })
   # The compare icon on a past run opens "Compare to another run" with that run chosen; either run can be changed there
   observeEvent(input$scenario_compare, {
     sc <- Filter(function(x) x$id == input$scenario_compare, scenarios())
     if (!length(sc)) return()
     if (!as.character(sc[[1]]$run) %in% vapply(history(), function(e) as.character(e$run), "")) {
-      showNotification("That run is too old to compare.", type = "warning"); return()
+      notify("That run is too old to compare.", type = "warning"); return()
     }
     cmp_a(NULL); cmp_b(as.character(sc[[1]]$run))
     session$sendCustomMessage("openCompare", list())
@@ -2226,20 +2327,56 @@ server <- function(input, output, session) {
     apply_loaded(sc[[1]]$snap, "run", quiet = TRUE)
     session$sendCustomMessage("runSoon", list())
   })
+  # Removing runs happens at once and a toast offers Undo, instead of asking first
+  removed_runs <- reactiveVal(NULL)
+  # Saving runs: one run's settings as a CSV that Upload inputs can read back, or every past run as one table. The file is made here
+  # and handed to the browser (pvec.js, saveFile) to save.
+  save_file <- function(name, text) session$sendCustomMessage("saveFile", list(name = name, text = text, mime = "text/csv"))
+  csv_text <- function(df, header)
+    paste(c(header, capture.output(write.table(df, sep = ",", row.names = FALSE, qmethod = "double", na = ""))), collapse = "\n")
+  observeEvent(input$scenario_dl, {
+    sc <- Filter(function(x) x$id == input$scenario_dl, scenarios())
+    if (!length(sc)) return()
+    x <- sc[[1]]; rows <- x$snap
+    hdr <- c(sprintf("# Settings of %s (%s) saved from PVEC, the Probabilistic Vectorial Capacity Simulator. Use Upload inputs to restore them.", x$name, x$time),
+             sprintf("# Result of this run: median Ct %s, 95%% range %s to %s", fmt3(x$med), fmt3(x$lo), fmt3(x$hi)))
+    save_file(sprintf("pvec_%s_settings.csv", gsub("^_|_$", "", gsub("[^A-Za-z0-9]+", "_", x$name))),
+              csv_text(data.frame(setting = names(rows), value = unname(rows)), paste(hdr, collapse = "\n")))
+  })
+  observeEvent(input$scenario_dl_all, {
+    sc <- scenarios()
+    if (!length(sc)) return(toast("There are no past runs to download yet."))
+    keys <- unique(unlist(lapply(sc, function(x) names(x$snap))))
+    wide <- do.call(rbind, lapply(sc, function(x) {
+      base <- data.frame(run = x$run, name = x$name, time = x$time, median_Ct = signif(x$med, 6), Ct_2.5th_percentile = signif(x$lo, 6),
+                         Ct_97.5th_percentile = signif(x$hi, 6), stringsAsFactors = FALSE)
+      vals <- setNames(rep("", length(keys)), keys); vals[names(x$snap)] <- unname(x$snap)
+      cbind(base, as.data.frame(as.list(vals), stringsAsFactors = FALSE, check.names = FALSE))
+    }))
+    save_file("pvec_past_runs.csv",
+              csv_text(wide, "# Past runs from PVEC, one row per run. The settings columns use the same names as Save inputs."))
+  })
   observeEvent(input$scenario_del, {
     sc <- Filter(function(x) x$id == input$scenario_del, scenarios())
     if (!length(sc)) return()
     run <- sc[[1]]$run
+    removed_runs(list(scen = sc, hist = Filter(function(e) e$run == run, history())))
     scenarios(Filter(function(x) x$id != input$scenario_del, scenarios()))
     history(Filter(function(e) e$run != run, history()))
+    toast(sprintf("Removed %s", sc[[1]]$name), "Undo", "undo_runs")
   })
   observeEvent(input$scenario_clear, {
     n <- length(scenarios()); req(n > 0)
-    showModal(modalDialog(title = "Clear past runs?", size = "s", easyClose = TRUE,
-      sprintf("This removes all %d past run%s from the list. The results on screen stay.", n, if (n == 1) "" else "s"),
-      footer = tagList(modalButton("Cancel"), actionButton("confirm_clear_runs", "Clear all", class = "btn-primary"))))
+    removed_runs(list(scen = scenarios(), hist = history()))
+    scenarios(list()); history(list())
+    toast(sprintf("Cleared %d past run%s", n, if (n == 1) "" else "s"), "Undo", "undo_runs")
   })
-  observeEvent(input$confirm_clear_runs, { scenarios(list()); history(list()); removeModal() })
+  observeEvent(input$undo_runs, {
+    u <- removed_runs(); req(u)
+    sc <- c(scenarios(), u$scen); scenarios(sc[order(vapply(sc, function(x) x$id, 0))])
+    hs <- c(history(), u$hist);   history(hs[order(vapply(hs, function(e) as.numeric(e$run), 0))])
+    removed_runs(NULL)
+  })
   observeEvent(input$scenario_rename, {
     r <- input$scenario_rename; id <- as.integer(r$id); nm <- substr(trimws(r$name), 1, 40)
     scenarios(lapply(scenarios(), function(x) { if (x$id == id) x$name <- if (nzchar(nm)) nm else sprintf("Run %d", x$run); x }))
@@ -2255,6 +2392,7 @@ server <- function(input, output, session) {
       tags$li(class = "scen-item", `data-id` = x$id, tabindex = 0, role = "button", title = "Click to reload this run's settings",
               div(class = "scen-top", span(class = "scen-name", x$name),
                   span(class = "scen-tools",
+                       tags$button(type = "button", class = "scen-dl", `aria-label` = "Download this run's settings", title = "Download this run's settings (CSV)", icon("download")),
                        tags$button(type = "button", class = "scen-run", `aria-label` = "Reload these settings and run", title = "Reload these settings and run now", icon("play")),
                        if (x$id != newest) tags$button(type = "button", class = "scen-cmp", `aria-label` = "Compare this run with another",
                                                        title = "Compare this run with another", icon("table-columns")),
@@ -2279,7 +2417,7 @@ server <- function(input, output, session) {
   # "Run N, model, structure, trials" line at the top of each results tab, with a warning when the settings have moved on
   run_context_ui <- function() renderUI({
     res <- results()
-    stale <- !is.null(run_sig()) && !identical(cur_sig(), run_sig())
+    stale <- stale_flag()
     div(class = "run-context no-print",
         span(class = "rc-main", sprintf("Run %d \u00b7 %s mortality \u00b7 %s age structure \u00b7 %s trials \u00b7 seed %s%s",
                                        res$run, tools::toTitleCase(res$model),
@@ -2291,10 +2429,44 @@ server <- function(input, output, session) {
   })
   for (tab in c("forecast", "sens", "draws", "surv")) output[[paste0("ctx_", tab)]] <- run_context_ui()
 
+  # Remove the drag box from a chart. This is done now and again once the charts have redrawn, because a redraw can bring the box back.
+  clear_brushes <- function(ids) {
+    for (id in ids) session$resetBrush(id)
+    session$onFlushed(function() { for (id in ids) session$resetBrush(id) }, once = TRUE)
+    session$sendCustomMessage("clearBrushes", as.list(sub("brush", "plot", ids)))   # the plot outputs the boxes sit on
+  }
+
+  # Dragging across the forecast chart sets the certainty range to the dragged span. The drag box stays on the chart as a marker of
+  # that range, and goes away on Reset range, on a new run, or when the range is edited by hand.
+  brush_range <- NULL
+  observeEvent(input$forecast_brush, {
+    b <- input$forecast_brush; ct <- results()$ct
+    if (is.null(b) || diff(range(ct)) == 0) return()
+    if (b$xmax - b$xmin < 0.01 * diff(range(ct))) return(clear_brushes("forecast_brush"))   # a click or a tiny slip, not a range
+    brush_range <<- c(signif(b$xmin, 3), signif(b$xmax, 3))
+    updateNumericInput(session, "cert_lo", value = brush_range[1])
+    updateNumericInput(session, "cert_hi", value = brush_range[2])
+    if (!is.null(thresh_before) && difftime(Sys.time(), thresh_before$time, units = "secs") < 5) {   # the drag began with a "click"
+      updateNumericInput(session, "thresh", value = thresh_before$value)
+      thresh_before <<- NULL
+    }
+  })
+  observeEvent(c(input$cert_lo, input$cert_hi), {
+    if (!is.null(brush_range) && !isTRUE(all.equal(c(input$cert_lo, input$cert_hi), brush_range))) {
+      brush_range <<- NULL; clear_brushes("forecast_brush")
+    }
+  }, ignoreInit = TRUE)
+  observeEvent(results_val(), { brush_range <<- NULL; clear_brushes("forecast_brush") }, ignoreInit = TRUE)
+
   # Clicking the forecast chart places the threshold there
+  # (Shiny reports a click as soon as the mouse goes down, so the start of a drag also lands here; the brush handler undoes it)
+  thresh_before <- NULL
   observeEvent(input$forecast_click, {
     x <- input$forecast_click$x
-    if (!is.null(x) && is.finite(x)) updateNumericInput(session, "thresh", value = signif(x, 3))
+    if (!is.null(x) && is.finite(x)) {
+      thresh_before <<- list(value = isolate(input$thresh), time = Sys.time())
+      updateNumericInput(session, "thresh", value = signif(x, 3))
+    }
   })
 
   # ---- "What this says": a short plain-language reading of each results tab ----
@@ -2480,6 +2652,20 @@ server <- function(input, output, session) {
     updateNumericInput(session, "cert_hi", value = ceil_sig(max(ct)))
   })
 
+  # "Reset range" appears once the range differs from the one a new run starts with (for example after dragging across the chart)
+  output$forecast_reset <- renderUI({
+    ct <- results()$ct; lo <- input$cert_lo; hi <- input$cert_hi
+    req(!is.null(lo), !is.null(hi))
+    if (!identical(as.numeric(c(lo, hi)), c(0, ceil_sig(max(ct)))))
+      actionButton("cert_reset", tagList(icon("rotate-left"), " Reset range"), class = "btn-default btn-sm")
+  })
+  observeEvent(input$cert_reset, {
+    brush_range <<- NULL
+    clear_brushes("forecast_brush")
+    updateNumericInput(session, "cert_lo", value = 0)
+    updateNumericInput(session, "cert_hi", value = ceil_sig(max(results()$ct)))
+  })
+
   cert_bounds <- reactive(c(
     if (is.na(input$cert_lo)) -Inf else input$cert_lo,
     if (is.na(input$cert_hi))  Inf else input$cert_hi))
@@ -2612,7 +2798,8 @@ server <- function(input, output, session) {
   # Wait for the values to settle: a preset or model change updates every field one by one, and checking
   # in between would flag cards whose new minimum is briefly above their old maximum
   val_inputs <- debounce(reactive(list(
-    model = input$mort_model, specs = lapply(setNames(setting_ids, setting_ids), get_spec))), 500)
+    model = input$mort_model, trials = n_trials(), specs = lapply(setNames(setting_ids, setting_ids), get_spec))), 500)
+  last_issues <- reactiveVal(NULL)
   observe({
     vi <- val_inputs()
     active <- active_ids(vi$model)
@@ -2624,6 +2811,15 @@ server <- function(input, output, session) {
     if (!identical(errs, isolate(last_errs()))) {
       last_errs(errs)
       session$sendCustomMessage("assumpErr", as.list(errs))
+    }
+    # What would stop a run, listed under the Run button so it can be fixed before clicking
+    issues <- lapply(Filter(function(id) nzchar(errs[[id]]), active), function(id) list(id = id, kind = "card", label = labels[[id]], msg = errs[[id]]))
+    if (is.na(vi$trials))
+      issues <- c(issues, list(list(id = "n_iter", kind = "field", label = "Trials",
+                                    msg = sprintf("enter a number between %s and %s", MIN_TRIALS, format(MAX_TRIALS, big.mark = ",")))))
+    if (!identical(issues, isolate(last_issues()))) {
+      last_issues(issues)
+      session$sendCustomMessage("runIssues", list(items = unname(issues)))
     }
     warns <- vapply(setting_ids, function(id) {
       if (!id %in% active || nzchar(errs[[id]])) return("")
@@ -2707,6 +2903,45 @@ server <- function(input, output, session) {
     m <- input$sens_metric; if (is.null(m)) m <- "prcc"
     switch(m, rho = names(sort(sc$rho)), contrib = names(sc$contrib), var = names(sc$vari), sc$prcc$id[order(sc$prcc$est)])
   })
+
+  # Hover details for the forecast and sensitivity charts. The server works out what each bar says and where it is; the browser
+  # (pvec.js) draws the highlight and the tooltip, so they follow the mouse instantly instead of waiting on a chart redraw.
+  tip_html <- function(...) as.character(tagList(...))
+  observe({
+    ct <- results()$ct; bins <- if (is.null(input$bins)) 50 else input$bins
+    bars <- list()
+    if (diff(range(ct)) > 0) {
+      hs <- hist(ct, breaks = bins, plot = FALSE); N <- length(ct)
+      bars <- lapply(seq_along(hs$counts), function(i) list(
+        x0 = hs$breaks[i], x1 = hs$breaks[i + 1], y0 = 0, y1 = hs$counts[i],
+        tip = tip_html(strong(sprintf("Ct %s to %s", fmt3(hs$breaks[i]), fmt3(hs$breaks[i + 1]))),
+                       div(sprintf("%s trials (%.1f%%)", format(hs$counts[i], big.mark = ","), 100 * hs$counts[i] / N)),
+                       div(sprintf("%.0f%% of trials are at or below this bar", 100 * mean(ct < hs$breaks[i + 1]))))))
+    }
+    session$sendCustomMessage("hoverBars", list(chart = "forecast_plot", bars = bars))
+  })
+  observe({
+    req(identical(input$tabs, "Sensitivity"))      # the ranking is costly, so it is only worked out once its tab is open
+    sc <- sens_res()
+    if (is.null(sc)) return(session$sendCustomMessage("hoverBars", list(chart = "sens_plot", bars = list())))
+    ids <- sens_ids(); m <- input$sens_metric; if (is.null(m)) m <- "prcc"
+    bars <- lapply(seq_along(ids), function(i) {
+      id <- ids[i]
+      val <- switch(m, rho = sc$rho[[id]], contrib = sc$contrib[[id]], var = sc$vari[[id]], sc$prcc$est[sc$prcc$id == id])
+      lines <- switch(m,
+        prcc = { r <- sc$prcc[sc$prcc$id == id, ]
+                 list(div(sprintf("PRCC %+.2f", r$est)), div(sprintf("95%% interval %+.2f to %+.2f", r$lo, r$hi)),
+                      div(if (r$est > 0) "\u25b2 raises Ct" else "\u25bc lowers Ct")) },
+        rho = list(div(sprintf("Rank correlation %+.2f", val))),
+        var = list(div(sprintf("%.1f%% of the variance, alone", val))),
+        list(div(sprintf("%+.1f%% of squared rank correlation", val))))
+      yc <- 0.7 + 1.2 * (i - 1)                            # horizontal bars are centred at 0.7, 1.9, 3.1, ... and 1 high
+      list(x0 = min(0, val), x1 = max(0, val), y0 = yc - 0.5, y1 = yc + 0.5,
+           tip = tip_html(strong(labels[[id]]), lines, div(class = "tip-hint", "Click to see its drawn values")))
+    })
+    session$sendCustomMessage("hoverBars", list(chart = "sens_plot", bars = bars))
+  })
+
   sens_sel <- reactiveVal(NULL)
   show_scatter <- function(id) {
     req(id %in% names(results()$draws))
@@ -2828,9 +3063,28 @@ server <- function(input, output, session) {
   observeEvent(input$surv_hover_h, surv_hover(input$surv_hover_h, FALSE))
   observeEvent(input$surv_leave, { surv_hl(NULL); surv_pos(NULL) })
 
+  # Dragging across a survival chart zooms the age axis out to the right edge of the drag (to the nearest 10 days)
+  observeEvent(c(input$surv_brush_s, input$surv_brush_h), {
+    b <- if (!is.null(input$surv_brush_s)) input$surv_brush_s else input$surv_brush_h
+    if (is.null(b)) return()
+    updateSliderInput(session, "surv_age", value = min(150, max(10, 10 * ceiling(b$xmax / 10))))
+    # Clear the drag box once the charts have redrawn, or it stays drawn over the new scale
+    clear_brushes(c("surv_brush_s", "surv_brush_h"))
+  }, ignoreNULL = TRUE)
+
+  # "Reset zoom" appears once the age axis has been changed from its starting 80 days
+  output$surv_reset <- renderUI({
+    if (!is.null(input$surv_age) && input$surv_age != 80)
+      actionButton("surv_zoom_reset", tagList(icon("rotate-left"), " Reset zoom"), class = "btn-default btn-sm")
+  })
+  observeEvent(input$surv_zoom_reset, {
+    clear_brushes(c("surv_brush_s", "surv_brush_h"))
+    updateSliderInput(session, "surv_age", value = 80)
+  })
+
   surv_args <- function(view) draw_surv(results(), view, surv_lts(), k = as.integer(input$surv_n), xmax = input$surv_age, hl = surv_hl())
   output$surv_plot_s <- renderPlot(surv_args("surv"),
-    alt = "Survivorship curves for the first trials, one line per trial. Hover a line to see that trial's values.")
+    alt = "Survivorship curves for the first trials, one line per trial. Hover a line to see that trial's values. Drag across the chart to zoom the age axis.")
   surv_life <- reactive(lifespans(results()))
   output$surv_life_plot <- renderPlot(draw_lifespans(surv_life()),
     alt = "Histogram of the median lifespan of each trial's mosquitoes, with the median and the 95 percent range marked.")
