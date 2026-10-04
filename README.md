@@ -8,6 +8,8 @@
 
 # Probabilistic Vectorial Capacity Simulator
 
+[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.23136677.svg)](https://doi.org/10.5281/zenodo.23136677)
+
 PVEC (Probabilistic VECtorial capacity) is an interactive tool that propagates uncertainty in transmission and mosquito mortality
 parameters through an age-specific vectorial capacity model. Each assumption can be fixed
 or given a probability distribution. The simulation draws many parameter sets at random and
@@ -150,7 +152,7 @@ reads the same format back.
 
 ## Citation
 
-See `CITATION.cff` (GitHub's "Cite this repository" button reads it). If this tool
+See `CITATION.cff` (GitHub's "Cite this repository" button reads it). The archived release is on Zenodo: https://doi.org/10.5281/zenodo.23136677. If this tool
 accompanies a paper, please cite the paper as well.
 
 ## Author and licence
