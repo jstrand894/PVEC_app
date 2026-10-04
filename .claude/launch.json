@@ -1,0 +1,11 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "pvec",
+      "runtimeExecutable": "Rscript",
+      "runtimeArgs": ["-e", "shiny::runApp('app', port = 4173, launch.browser = FALSE)"],
+      "port": 4173
+    }
+  ]
+}

@@ -2426,25 +2426,44 @@ server <- function(input, output, session) {
 
   # ---- Suggest linking mortality a and b, which are usually estimated together ----
   ab_dismissed <- reactiveVal(FALSE)
+  ab_linked    <- reactiveVal(FALSE)       # set by the button, so the card can show that it worked
   ab_pair <- function(cp) any((cp$a == "mort_a" & cp$b == "mort_b") | (cp$a == "mort_b" & cp$b == "mort_a"))
   output$ab_hint <- renderUI({
-    if (ab_dismissed() || identical(input$mort_model, "exponential")) return(NULL)
+    if (identical(input$mort_model, "exponential")) return(NULL)
+    done <- ab_linked() && ab_pair(corr_pairs())
+    if (!done && ab_dismissed()) return(NULL)
     va <- input$mort_a_dist; vb <- input$mort_b_dist
-    if (is.null(va) || is.null(vb) || va == "Fixed" || vb == "Fixed" || ab_pair(corr_pairs())) return(NULL)
+    if (is.null(va) || is.null(vb) || va == "Fixed" || vb == "Fixed" || (!done && ab_pair(corr_pairs()))) return(NULL)
     div(class = "hint-card", role = "note",
         span(class = "hint-icon", `aria-hidden` = "true", icon("link")),
         div(class = "hint-body",
-            p(strong("Mortality a and b are drawn independently."), " They are usually estimated from the same data, and in published fits they tend to move in opposite directions: ",
+            p(strong("Mortality a and b are currently drawn independently."), " They are usually estimated from the same data, and in published fits they tend to move in opposite directions: ",
               "a higher starting hazard goes with a slower rate of ageing. Drawing them independently can make the forecast look wider or narrower than the data support."),
-            div(class = "hint-actions",
-                actionButton("ab_link", "Link them (\u03c1 = \u22120.5)", class = "btn-default btn-sm"),
-                actionButton("ab_dismiss", "Not now", class = "btn-link btn-sm"),
-                span(class = "hint-small", "\u22120.5 is a moderate starting point. You can edit it under Linking assumptions."))))
+            if (done)
+              div(class = "hint-actions", role = "status",
+                  actionButton("ab_undo", class = "btn-default btn-sm hint-done", label = tagList(
+                    span(class = "hint-size", `aria-hidden` = "true", "Link them (\u03c1 = \u22120.5)"),     # holds the button at its original size
+                    span(class = "hint-lbl hint-lbl-linked",
+                         HTML('<svg class="scen-check" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="10"/><path d="M7 12.5l3.2 3.2L17 8.8"/></svg>'),
+                         "Linked"),
+                    span(class = "hint-lbl hint-lbl-undo", icon("rotate-left"), "Undo"))),
+                  span(class = "hint-small", "\u03c1 = \u22120.5. Click Run to use it."),
+                  tags$a(href = "#", class = "hint-goto", "Go to Linking assumptions \u2192"))
+            else
+              div(class = "hint-actions",
+                  actionButton("ab_link", "Link them (\u03c1 = \u22120.5)", class = "btn-default btn-sm"),
+                  actionButton("ab_dismiss", "Not now", class = "btn-link btn-sm"),
+                  span(class = "hint-small", "\u22120.5 is a moderate starting point. You can edit it under Linking assumptions."))))
   })
   observeEvent(input$ab_link, {
     cp <- corr_pairs()
     corr_pairs(rbind(cp, data.frame(a = "mort_a", b = "mort_b", rho = -0.5, stringsAsFactors = FALSE)))
-    notify("Linked mortality a and b (\u03c1 = \u22120.5). Click Run to use it.", type = "message", duration = 6)
+    ab_linked(TRUE)
+  })
+  observeEvent(input$ab_undo, {
+    cp <- corr_pairs()
+    corr_pairs(cp[!((cp$a == "mort_a" & cp$b == "mort_b") | (cp$a == "mort_b" & cp$b == "mort_a")), , drop = FALSE])
+    ab_linked(FALSE)
   })
   observeEvent(input$ab_dismiss, ab_dismissed(TRUE))
 

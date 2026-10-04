@@ -524,7 +524,21 @@ window.PV_GATE = (function () {
         var open = !$('#eq_fold').hasClass('adv-open');
         $('#eq_fold').toggleClass('adv-open', open); $(this).attr('aria-expanded', String(open));
       });
-      $(document).on('click', '#link_toggle', function() { setLink(!$('#sec_linking').hasClass('adv-open')); });
+      $(document).on('click', '#link_toggle', function() {
+        var open = !$('#sec_linking').hasClass('adv-open'); setLink(open);
+        // It opens downwards, often off screen: once it has finished growing, scroll just far enough to show all of it
+        if (open) {
+          var body = document.getElementById('link_body'), done = false;
+          var show = function() {
+            if (done) return; done = true; body.removeEventListener('transitionend', onEnd);
+            var el = document.getElementById('sec_linking');
+            if (el && el.scrollIntoView) el.scrollIntoView({block: 'nearest', behavior: window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth'});
+          };
+          var onEnd = function(e) { if (e.target === body && e.propertyName === 'grid-template-rows') show(); };
+          body.addEventListener('transitionend', onEnd);
+          setTimeout(show, 700);      // in case no transition runs (reduced motion)
+        }
+      });
 
       // Jump bar: scroll to a section (animated, instant if reduced motion is on) and highlight the current one
       function pageScroller() { return window.innerWidth >= 768 ? document.querySelector('.tab-content') : null; }
@@ -547,6 +561,10 @@ window.PV_GATE = (function () {
         var t = $(this).data('target'); if (t === 'sec_linking') setLink(true);
         forcedChip = t; forcedUntil = Date.now() + 1500;      // light the chip at once, even if the page cannot scroll that far
         scrollToSection(t); spy();
+      });
+      // "Go to Linking assumptions" beside the linked check in the mortality a/b hint
+      $(document).on('click', '.hint-goto', function(e) {
+        e.preventDefault(); setLink(true); scrollToSection('sec_linking'); spy();
       });
       var spyQueued = false;
       function spy() {
