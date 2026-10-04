@@ -194,20 +194,32 @@
     .fit-msg.bad { color: var(--danger-text); }
     .assump-note { font-size: 12px; line-height: 1.3; color: var(--warn); background: var(--warn-bg); border: 1px solid var(--warn-line);
       border-radius: 4px; padding: 4px 6px; margin: 0 0 8px; }
-    .link-box { background: var(--surface-2); border: 1px solid var(--line); border-radius: 6px; padding: 10px 14px 12px; margin-bottom: 14px; }
+    .link-box { background: var(--surface); border: 1px solid var(--line); border-radius: 6px; padding: 10px 14px 12px; margin-bottom: 14px; }
     .corr-add { margin-top: 25px; }
-    .corr-row { font-size: 13px; padding: 3px 0; border-bottom: 1px solid var(--line); }
-    .corr-row a { margin-left: 10px; font-size: 12px; }
-    .corr-row.inactive { color: var(--muted); }
+    .corr-head { font-size: 12px; font-weight: 600; letter-spacing: .04em; text-transform: uppercase; color: var(--muted); margin: 6px 0 4px; }
+    .corr-row { display: flex; align-items: center; gap: 10px; font-size: 13px; padding: 8px 10px; margin: 0 0 6px; border: 1px solid var(--accent-line);
+      border-left: 4px solid var(--accent); border-radius: 6px; background: var(--accent-soft); }
+    .corr-icon { flex: none; color: var(--accent-dark); }
+    .corr-main { flex: 1 1 auto; min-width: 0; }
+    .corr-arrow { margin: 0 8px; color: var(--muted); }
+    .corr-note { font-size: 12px; color: var(--muted); margin-top: 1px; }
+    .corr-rho { flex: none; font-weight: 700; font-size: 12.5px; padding: 1px 9px; border-radius: 10px; background: var(--surface); border: 1px solid var(--accent-line); color: var(--accent-dark); }
+    .corr-rho.neg { color: #b84d00; border-color: #f0c9a8; }
+    html[data-theme="dark"] .corr-rho.neg { color: #ff9b57; border-color: #6b4a2e; }
+    .corr-row a.corr-rm { flex: none; margin: 0; width: 26px; height: 26px; line-height: 26px; text-align: center; border-radius: 50%; color: var(--muted); text-decoration: none; }
+    .corr-row a.corr-rm:hover, .corr-row a.corr-rm:focus-visible { background: var(--surface); color: var(--danger); }
+    .corr-row.inactive { background: var(--surface-2); border-color: var(--line); border-left-color: var(--line-strong); color: var(--muted); }
+    .corr-row.inactive .corr-icon, .corr-row.inactive .corr-rho { color: var(--muted); }
+    .corr-empty { font-size: 13px; color: var(--muted); text-align: center; padding: 12px; margin: 6px 0; border: 1px dashed var(--line-strong); border-radius: 6px; }
     .assump-upload { color: var(--accent-dark); font-size: 12px; margin-top: 4px; }
     .assump-upload:empty { display: none; }
     .assump-card.assump-uploaded { border-left: 3px solid var(--new); }
     .assump-card.assump-differs { border-left: 3px solid var(--accent); }
     .jump-bar { position: sticky; top: 0; z-index: 25;  display: flex; flex-wrap: wrap;
       align-items: center; gap: 6px; padding: 8px 0; margin-bottom: 10px; border-bottom: 1px solid var(--line); }
-    .jump-chip { border: 1px solid var(--line-strong); background: var(--surface); color: var(--text); border-radius: 14px; padding: 2px 11px;
+    .jump-chip { border: 1px solid var(--line-strong); background: var(--surface); color: var(--text); z-index: 1; border-radius: 14px; padding: 2px 11px;
       font-size: 12.5px; cursor: pointer; transition: background-color var(--dur-fast), color var(--dur-fast), border-color var(--dur-fast); }
-    .jump-chip:hover { background: var(--hover); }
+    .jump-chip:hover { background: var(--hover); z-index: 3; }
     .jump-chip { position: relative; }
     .jump-chip[data-tip]::after { content: attr(data-tip); position: absolute; left: 0; top: calc(100% + 8px); z-index: 40;
       width: 250px; padding: 6px 10px; border-radius: 4px; text-align: left; white-space: normal;
@@ -217,6 +229,18 @@
       transition: opacity var(--dur-fast) ease var(--dur), visibility 0s linear var(--dur); }
     @media (prefers-reduced-motion: reduce) { .jump-chip[data-tip]::after { transition: none; } }
     .jump-chip.active { background: var(--btn); border-color: var(--accent-dark); color: #fff; }
+    /* The blue is goo behind the translucent chips (built by pvec.js). Moving to another chip, a drop of it pulls out of the old chip,
+       thins into a strand, and swells into the new chip; the SVG goo filter fuses the pieces into one wet shape. Without the script
+       (or with reduced motion) the active chip is simply filled blue. */
+    .jump-goo { position: absolute; inset: 0; z-index: 0; pointer-events: none; filter: url(#jump-goo); }
+    .jump-goo > span { position: absolute; left: 0; top: 0; width: 0; height: 0; border-radius: 999px; background: var(--btn); }
+    .jump-goo > .jb-head { opacity: 0; }
+    .jump-goo > .jb-head.on { opacity: 1; }
+    .jump-bar.has-blob .jump-chip, html[data-theme="dark"] .jump-bar.has-blob .jump-chip { background: color-mix(in srgb, var(--surface) 55%, transparent); }   /* translucent so the goo shows through */
+    .jump-bar.has-blob .jump-chip:hover, html[data-theme="dark"] .jump-bar.has-blob .jump-chip:hover { background: color-mix(in srgb, var(--hover) 65%, transparent); }
+    .jump-bar.has-blob .jump-chip { transition: background-color var(--dur-fast), border-color var(--dur-fast), color .3s ease .2s; }   /* text colour waits for the goo */
+    .jump-bar.has-blob .jump-chip.active, html[data-theme="dark"] .jump-bar.has-blob .jump-chip.active { background: transparent; border-color: transparent; color: #fff; }
+    @media (prefers-reduced-motion: reduce) { .jump-bar.has-blob .jump-chip { transition: none; } }
     .jump-count { margin-left: 6px; font-size: 11px; opacity: 0.85; }
     .jump-count:empty { display: none; }
     .jump-actions { margin-left: auto; font-size: 12px; color: var(--muted); }
@@ -379,7 +403,7 @@
     @media (max-width: 1250px) { .nav-tabs > li > a { padding: 8px 9px; font-size: 13.5px; } }
 
     /* Variable letters on the cards look like the ones in the equations */
-    .mvar { font-family: 'Times New Roman', Times, serif; font-style: italic; font-weight: 400; font-size: 1.2em; padding: 0 1px; }
+    .mvar { font-family: 'Times New Roman', Times, serif; font-style: italic; font-weight: 400; font-size: 1.2em; padding: 0 1px; line-height: 1; }
     /* Preset descriptions: stacked in one box whose height eases to the visible one */
     .preset-stack { position: relative; }
     .preset-stack.animate { transition: height var(--dur) cubic-bezier(.4,0,.2,1); }
@@ -539,8 +563,28 @@
     .about-refs li::marker { color: var(--muted); font-weight: 600; }
     .about .fold { margin: 6px 0 14px; padding: 4px 12px; background: var(--page); border: 1px solid var(--line); border-radius: 8px; }
     .about .app-meta { margin: 0 0 14px; }
-    .about .author-card { max-width: none; margin-bottom: 20px; background: var(--surface); box-shadow: 0 1px 2px rgba(16,24,40,0.04); }
+    .about .author-card { max-width: none; margin-bottom: 0; flex-direction: column; align-items: stretch; gap: 10px; padding: 16px 20px; background: var(--surface); box-shadow: 0 1px 2px rgba(16,24,40,0.04); }
     .about-section { scroll-margin-top: 54px; }
+    /* How to cite and the author, side by side; they stack when the page is narrow */
+    .about-pair { display: flex; flex-wrap: wrap; gap: 14px; margin: 0 0 20px; align-items: stretch; }
+    .about-pair > .cite-card { flex: 1 1 340px; margin: 0; display: flex; flex-direction: column; padding-bottom: 16px; }
+    .about-pair > .author-card { flex: 1 1 340px; margin: 0; }
+    .author-head { display: flex; align-items: center; gap: 14px; }
+    .about .author-photo { width: 68px; height: 68px; }
+    .about .author-role { margin: 0; font-size: 13.5px; color: var(--muted); }
+    .about .author-card .author-note { margin: 0; line-height: 1.55; }
+    .about .author-card .author-link { margin: 0; }
+    .about .author-text h4 { font-size: 16px; margin-bottom: 2px; }
+    .about .author-text p { margin-bottom: 3px; font-size: 13.5px; }
+    .about .author-text .author-note { font-size: 13px; }
+    .eq-plain { font-size: 14px; background: var(--surface-2); border-radius: 6px; padding: 8px 12px; margin: 10px 0; }
+    .terms { margin: 4px 0 8px; max-width: 760px; }
+    .terms dt { font-size: 13px; font-weight: 600; color: var(--accent-dark); margin-top: 8px; }
+    .terms dd { margin: 0; font-size: 13px; color: var(--muted); line-height: 1.45; }
+    .project-links { display: flex; flex-wrap: wrap; gap: 6px 18px; margin: 12px 0 8px; font-size: 13.5px; }
+    .project-links a { white-space: nowrap; }
+    .cite-card .app-meta { display: block; margin: auto 0 0; padding-top: 12px; }
+    .cite-card .cite-text { margin-bottom: 12px; }
 
     .stale-ghost { font-size: 12px; color: var(--warn); background: var(--warn-bg); border: 1px solid var(--warn-line);
       border-radius: 4px; padding: 5px 8px; margin-top: 8px; }
@@ -763,7 +807,7 @@
     @keyframes status-out { 0% { opacity: 1; } 100% { opacity: 0; } }
 
     /* Cleaner cards: tighter spacing, preview lined up under the title text */
-    .cards-grid .assump-card { padding: 10px 14px 8px; }
+    .cards-grid .assump-card { padding: 10px 14px 10px; }   /* the same space below the last row as above the title */
     .assump-summary { margin: 2px 0 0 16px; }
     .cards-grid .assump-prev { margin: 2px 0 0 16px; }
 
@@ -806,7 +850,7 @@
     .tip-cell { position: relative; }
     .tip-cell .surv-tip { left: calc(var(--tx, 0px) + 14px); top: calc(var(--ty, 0px) + 14px); }
     .tip-cell.tip-flip .surv-tip { left: calc(var(--tx, 0px) - 14px); transform: translateX(-100%); }
-    .tip-cell:not(:hover) .surv-tip { display: none; }
+    .tip-cell:not(:hover):not(.hl-linked) .surv-tip { display: none; }
     .surv-tip .tip-hint { color: var(--muted, #6b7280); font-size: 11px; margin-top: 2px; }
     .surv-tip { position: absolute; z-index: 30; pointer-events: none; background: var(--surface); color: var(--text); border: 1px solid var(--line-strong);
       border-radius: 6px; padding: 6px 10px; font-size: 12px; line-height: 1.4; box-shadow: 0 4px 14px rgba(16,24,40,.18); white-space: nowrap; }
@@ -882,9 +926,10 @@
     .insight-title { font-size: 11px; font-weight: 700; letter-spacing: .06em; text-transform: uppercase; color: var(--accent-dark); margin-bottom: 2px; }
     .insight p { margin: 0; font-size: 14px; line-height: 1.5;  }
     .about-callout.about-card { background: var(--accent-soft); }
-    /* Model check key: right-aligned under the table, where the marks appear */
+    /* Model check key: right edge flush with the right edge of the table */
     .mc-legend { justify-content: flex-end; margin: 0 0 14px; }
-    .clean-table + .mc-legend { margin-top: -14px; padding-right: 12px; }
+    .mc-table-wrap { width: fit-content; max-width: 100%; }
+    .clean-table + .mc-legend { margin-top: -14px; padding-right: 0; }
 
     /* Light bulb: a brief yellow glow when its tab is shown */
     .insight-icon.glow { animation: bulb-glow 3.6s ease-in-out; }
@@ -1126,7 +1171,7 @@
     #run.btn.stale:hover { background: #e6a31f; border-color: #b57a05; color: #3a2600; box-shadow: 0 1px 2px rgba(16,24,40,0.2); }
     html[data-theme="dark"] #run.btn.stale, html[data-theme="dark"] #run.btn.stale:focus { background: #f2b233; border-color: #c98a0a; color: #3a2600; }
     html[data-theme="dark"] #run.btn.stale:hover { background: #e6a31f; border-color: #b57a05; color: #3a2600; }
-    #run { transition: background-color var(--dur-fast) ease, border-color var(--dur-fast) ease, color var(--dur-fast) ease, box-shadow .6s ease; }
+    #run { transition: background-color var(--dur) ease, border-color var(--dur) ease, color var(--dur) ease, box-shadow .6s ease; }
 
     /* "new" slides open between "Run" and "simulation" (and closes again) instead of the label fading */
     #run .run-label { display: inline-flex; align-items: baseline; white-space: pre; }
@@ -1266,11 +1311,17 @@
     .surv-wrap { position: relative; }
 
     /* Highlight over the bar under the mouse on the forecast and sensitivity charts (positioned by pvec.js) */
-    .bar-hl { position: absolute; pointer-events: none; z-index: 4; opacity: 0; background: rgba(8, 24, 48, .3); border-radius: 1px;
-      transition: opacity var(--dur-fast) ease, left var(--dur-fast) ease-out, top var(--dur-fast) ease-out, width var(--dur-fast) ease-out, height var(--dur-fast) ease-out; }
+    .bar-hl { position: absolute; pointer-events: none; z-index: 4; opacity: 0; border-radius: 1px;
+      /* The bar under the mouse is brightened in place (its own colour, just lighter and a touch richer) and lifted off the chart by a soft
+         shadow. A white wash would turn it pastel, so the picture behind is filtered instead. */
+      background: rgba(255, 255, 255, .18);
+      -webkit-backdrop-filter: brightness(1.3) saturate(1.12); backdrop-filter: brightness(1.3) saturate(1.12);
+      box-shadow: 0 2px 8px rgba(16, 24, 40, .38);
+      transition: opacity var(--dur-fast) ease; }   /* it appears in place; it does not slide between bars */
+    @supports (backdrop-filter: brightness(1)) or (-webkit-backdrop-filter: brightness(1)) { .bar-hl { background: transparent; } }
     .bar-hl.on { opacity: 1; }
-    html[data-theme="dark"] .bar-hl { background: rgba(255, 255, 255, .24); }
-    .tip-cell:not(:hover) .bar-hl { opacity: 0; }
+    html[data-theme="dark"] .bar-hl { box-shadow: 0 2px 9px rgba(0, 0, 0, .6); }
+    .tip-cell:not(:hover):not(.hl-linked) .bar-hl { opacity: 0; }
 
     /* Toast with an Undo action, fixed at the bottom of the window above the footer so nothing on the page moves */
     .pv-toast { position: fixed; left: 50%; bottom: 52px; z-index: 2000; display: flex; align-items: center; gap: 14px; max-width: calc(100vw - 32px);
@@ -1341,12 +1392,14 @@
 
     /* The Run button and Past runs are one panel, stuck to the bottom of the sidebar so both stay in view while the settings scroll behind
        them. A shadow above the panel appears only while something is actually sliding underneath it (the "stuck" class, set in pvec.js). */
-    .sidebar-dock { z-index: 5; margin-top: 10px; background: var(--surface); border: 1px solid var(--line);
-      border-radius: 4px; box-shadow: 0 1px 2px rgba(16, 24, 40, .04); transition: box-shadow var(--dur) ease; }
-    @media (min-width: 768px) { .sidebar-dock { position: sticky; bottom: 0; } }   /* on a phone the panel scrolls with the page instead of covering it */
-    .sidebar-dock.stuck { box-shadow: 0 -10px 14px -10px rgba(16, 24, 40, .3), 0 1px 2px rgba(16, 24, 40, .04); }
-    .sidebar-dock > .run-dock { position: static; margin: 0; border: 0; border-radius: 0; box-shadow: none; background: none; }
-    .sidebar-dock > .history-box { margin: 0; border: 0; border-top: 1px solid var(--line); border-radius: 0; box-shadow: none; background: none; }
+    .sidebar-dock { z-index: 5; margin-top: 10px; background: var(--page); transition: box-shadow var(--dur) ease; }
+    @media (min-width: 768px) { .sidebar-dock { position: sticky; bottom: -8px; padding-bottom: 8px; } }   /* -8px cancels the column's bottom padding, so nothing shows below the panel; on a phone the panel scrolls with the page instead of covering it */
+    .sidebar-dock.stuck { box-shadow: 0 -10px 14px -10px rgba(16, 24, 40, .3); }
+    /* Two separate boxes with a gap between them, but one sticky unit: the opaque page-coloured dock behind them keeps the gap from showing settings */
+    .sidebar-dock > .run-dock, .sidebar-dock > .history-box { margin: 0; background: var(--surface); border: 1px solid var(--line);
+      border-radius: 4px; box-shadow: 0 1px 2px rgba(16, 24, 40, .04); }
+    .sidebar-dock > .run-dock { position: static; }
+    .sidebar-dock > .history-box { margin-top: 8px; position: relative; }   /* the "Settings loaded" message is placed against this box */
     /* A long list of runs scrolls inside the panel, so the panel never takes over the sidebar */
     .sidebar-dock #scenario_list { max-height: clamp(90px, 22vh, 220px); overflow-y: auto; overflow-x: hidden; }
 
@@ -1372,3 +1425,151 @@
     .chart-hint-x { flex: none; border: 0; background: none; padding: 0 4px; font-size: 16px; line-height: 1; color: var(--muted); cursor: pointer; }
     .chart-hint-x:hover { color: var(--text); }
     .chart-hint.gone { opacity: 0; max-height: 0; margin: 0; padding-top: 0; padding-bottom: 0; border-width: 0; }
+
+    /* ---- Polish: sliding tab marker, past-run deltas, card effect bars, cohort animation ---- */
+    .nav-tabs { position: relative; }
+    .tab-underline { position: absolute; height: 3px; z-index: 3; pointer-events: none; background: var(--accent); border-radius: 3px 3px 0 0; opacity: 0; transition: opacity var(--dur) ease; }
+    .tab-underline.on { opacity: 1; }
+    @media (prefers-reduced-motion: reduce) { .tab-underline { transition: none; } }
+
+    .scen-delta { font-size: 11px; line-height: 1.5; padding: 0 7px; border-radius: 9px; border: 1px solid var(--line); white-space: nowrap; }
+    .scen-delta.up { color: var(--accent-dark); background: var(--accent-soft); border-color: var(--accent-line); }
+    .scen-delta.down { color: var(--text); background: var(--surface-3); }
+    .scen-delta.flat { color: var(--muted); background: transparent; }
+
+    .card-effect { display: flex; align-items: center; gap: 8px; margin: 2px 0 0; line-height: 1; min-height: 12px; opacity: .8; }
+    .ce-label { flex: none; font-size: 10.5px; color: var(--muted); white-space: nowrap; }
+    .ce-track { flex: 1 1 auto; height: 4px; border-radius: 2px; background: var(--surface-3); overflow: hidden; }
+    .ce-track > i { display: block; height: 100%; width: 0; border-radius: 2px; background: var(--accent); transition: width .6s cubic-bezier(.3,0,.2,1), background-color .6s ease; }
+    .card-effect.none { opacity: .45; }
+    /* The bar is from the last run. Once you edit the assumption it is out of date, so it fades and goes grey until you run again. */
+    .assump-card.assump-changed .card-effect { opacity: .35; filter: grayscale(1); }
+    @media (prefers-reduced-motion: reduce) { .ce-track > i { transition: none; } }
+
+    .cohort { margin: 14px 0 6px; padding: 12px 14px 8px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface-2); }
+    .cohort-head { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 8px; }
+    .cohort-models { display: inline-flex; border: 1px solid var(--line-strong); border-radius: 6px; overflow: hidden; }
+    .cohort-m { border: 0; background: var(--surface); color: var(--text); font-size: 12.5px; padding: 3px 11px; cursor: pointer; }
+    .cohort-m + .cohort-m { border-left: 1px solid var(--line-strong); }
+    .cohort-m.on { background: var(--btn); color: #fff; }
+    .cohort-canvas { display: block; width: 100%; }
+    .cohort-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin-top: 8px; }
+    .cohort-bar .btn { margin: 0; min-width: 84px; }
+    .cohort-scrub { flex: 1 1 140px; min-width: 120px; accent-color: var(--accent); }
+    .cohort-read { font-size: 12.5px; color: var(--muted); }
+    .cohort-note { font-size: 12.5px; color: var(--muted); margin: 6px 0 4px; line-height: 1.45; }
+    /* Shiny dims a chart while it redraws; for the small card previews that dim-then-return reads as a flicker, so the picture's own fade does the work */
+    .assump-card .shiny-plot-output.recalculating { opacity: 1; }
+
+    /* The "frame" copy of an animated chart sits underneath the real one (axes, gridlines, labels, legend); the draw-in reveals the data over it */
+    .plot-frame { position: absolute; left: 0; top: 0; width: 100%; z-index: 0; pointer-events: none; }
+    .plot-frame .shiny-plot-output { opacity: 1 !important; }
+    .tip-cell > .shiny-plot-output, .surv-cell > .shiny-plot-output { position: relative; z-index: 1; }
+
+    /* ---- Results gate: a shimmering skeleton stands in for the results until the Run bar has finished (also on the first load) ---- */
+    .results-body { position: relative; }
+    .pv-skel { display: none; }
+    body.pv-gated .results-body > :not(.pv-skel) { visibility: hidden; }
+    body.pv-gated .results-body { min-height: 520px; }
+    body.pv-gated:not(.has-results) .results-body { display: block; }
+    body.pv-gated .empty-state { display: none; }
+    body.pv-gated .pv-skel { display: block; position: absolute; left: 0; right: 0; top: 0; z-index: 2; pointer-events: none; }
+    .sk-line, .sk-tiles i, .sk-chart { background: var(--surface-3); border-radius: 6px; position: relative; overflow: hidden; }
+    .sk-line { height: 14px; margin: 6px 0 14px; }
+    .sk-w40 { width: 40%; } .sk-w55 { width: 55%; } .sk-w70 { width: 70%; }
+    .sk-tiles { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin: 0 0 18px; }
+    .sk-tiles i { display: block; height: 86px; border-radius: 8px; }
+    .sk-chart { height: 360px; border-radius: 8px; margin: 0 0 14px; }
+    .sk-line::after, .sk-tiles i::after, .sk-chart::after { content: ''; position: absolute; inset: 0; transform: translateX(-100%);
+      background: linear-gradient(90deg, transparent, color-mix(in srgb, var(--surface) 70%, transparent), transparent); animation: sk-shimmer 1.4s ease-in-out infinite; }
+    @keyframes sk-shimmer { to { transform: translateX(100%); } }
+    @media (prefers-reduced-motion: reduce) { .sk-line::after, .sk-tiles i::after, .sk-chart::after { animation: none; } }
+    @media (max-width: 767px) { .sk-tiles { grid-template-columns: repeat(2, 1fr); } }
+
+    /* Driver tiles and their bars light up together */
+    .driver-tile.linked { box-shadow: 0 0 0 2px var(--accent), 0 3px 10px rgba(16, 24, 40, .14); }
+    .driver-tile { transition: box-shadow var(--dur-fast) ease; }
+    .tip-cell.hl-linked .bar-hl { opacity: 1; }
+
+    /* Run button turning amber: a single soft ring that spreads out and fades */
+    #run.ping { animation: run-ping .9s ease-out; }
+    @keyframes run-ping { 0% { box-shadow: 0 0 0 0 rgba(242, 178, 51, .55); } 100% { box-shadow: 0 0 0 12px rgba(242, 178, 51, 0); } }
+    @media (prefers-reduced-motion: reduce) { #run.ping { animation: none; } }
+
+    /* Reset pop-up: the choices and the Start over confirmation share one dialog */
+    .reset-confirm { display: none; }
+    .reset-panes.confirming .reset-choices { display: none; }
+    .reset-panes.confirming .reset-confirm { display: block; animation: fade-in .2s ease both; }
+    .reset-confirm-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 14px; }
+    .modal-content:has(.reset-panes.confirming) .modal-footer { display: none; }   /* Back does the job of Cancel on the confirmation */
+
+    /* Quick summary bar: the toggle on the left, the run details on the right (they used to be a separate line above) */
+    .insight-bar { display: flex; flex-wrap: wrap; align-items: center; cursor: pointer; }
+    .insight-bar .insight-head { width: auto; flex: 0 0 auto; }
+    .insight-ctx.run-context { margin: 0 0 0 auto; padding: 6px 14px 6px 0; min-height: 0; text-align: right; justify-content: flex-end; cursor: default; }
+    @media (max-width: 900px) { .insight-ctx.run-context { margin-left: 42px; padding: 0 14px 8px 0; text-align: left; justify-content: flex-start; flex-basis: 100%; } }
+
+    /* Forecast chart box: Download in the top-right corner of the controls row */
+    .plot-card { position: relative; }
+    .ce-label { max-width: 118px; overflow: hidden; text-overflow: ellipsis; }
+
+    .plot-card > .plot-controls { margin-top: 10px; }
+
+    /* Download floats over the top-right corner of the plot (forecast and sensitivity), so it takes up no space of its own */
+    .tip-cell > .dl-menu { position: absolute; top: 4px; right: 6px; z-index: 6; margin: 0; }
+    .tip-cell > .dl-menu .dropdown-menu { right: 0; left: auto; }
+    .tip-cell > .reset-float { right: 118px; }   /* "Reset range" moves over to leave the corner to Download */
+
+    /* The forecast and sensitivity readout is a fixed box in an empty corner of the plot (it used to follow the mouse and cover the bars):
+       under the Download button for the histogram, whose bars thin out to the right, and bottom-right for the sensitivity bars */
+    .tip-cell .js-tip, .tip-cell.tip-flip .js-tip { left: auto; right: 12px; top: 46px; bottom: auto; transform: none; width: 214px; white-space: normal;
+      box-shadow: 0 2px 10px rgba(16, 24, 40, .14); animation: fade-in var(--dur-fast) ease-out; }
+    .tip-cell[data-chart="sens_plot"] .js-tip { top: auto; bottom: 58px; }
+
+    /* Median Ct across runs, beside "Past runs": the line, with the newest run as a dot. Blue when the newest run is higher, amber when lower. */
+    .run-spark { display: inline-block; vertical-align: -5px; margin-left: 8px; line-height: 0; cursor: default; }
+    .run-spark svg { overflow: visible; }
+    .rs-line { fill: none; stroke: var(--muted); stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; stroke-dasharray: 100; }
+    .rs-dot { fill: var(--muted); }
+    .run-spark.up .rs-line { stroke: var(--accent); } .run-spark.up .rs-dot { fill: var(--accent); }
+    .run-spark.down .rs-line { stroke: #d98a00; } .run-spark.down .rs-dot { fill: #d98a00; }
+
+    /* ---- About tab additions ---- */
+    /* the two extra animations share the cohort box styles */
+    .cohort.demo { margin-top: 12px; }
+    .race-n { display: inline-flex; align-items: center; gap: 8px; margin: 0; font-size: 12.5px; font-weight: 400; color: var(--muted); flex: 1 1 200px; }
+    .race-days { flex: 1 1 100px; min-width: 90px; accent-color: var(--accent); }
+    .race-days-out { flex: none; min-width: 52px; color: var(--text); font-weight: 600; }
+
+    /* equation symbols: dotted underline, and a small definition on hover */
+    #eq_body i.eq-sym { cursor: help; border-radius: 2px; transition: background-color var(--dur-fast) ease; }
+    #eq_body i.eq-sym:hover, #eq_body i.eq-sym:focus-visible { background: var(--accent-soft); outline: none; box-shadow: 0 0 0 2px var(--accent-soft); }
+    #eq_body i.eq-sym[role="button"] { cursor: pointer; }
+    .eq-tip { position: fixed; z-index: 2500; max-width: 260px; padding: 6px 10px; border-radius: 6px; font-size: 12.5px; line-height: 1.4; pointer-events: none;
+      background: var(--surface); color: var(--text); border: 1px solid var(--line-strong); box-shadow: 0 4px 14px rgba(16, 24, 40, .18); opacity: 0; visibility: hidden;
+      transition: opacity var(--dur-fast) ease, visibility 0s linear var(--dur-fast); }
+    .eq-tip.on { opacity: 1; visibility: visible; transition: opacity var(--dur-fast) ease; }
+    .eq-tip strong { font-family: 'Times New Roman', Times, serif; font-style: italic; font-size: 1.15em; color: var(--accent-dark); }
+    .eq-tip-go { margin-top: 2px; font-size: 11px; color: var(--muted); }
+
+    /* preset shapes: small distribution pictures in the Presets table */
+    .spark { display: block; }
+    .spark path { fill: var(--accent-soft); stroke: var(--accent); stroke-width: 1.3; stroke-linejoin: round; }
+    .spark line { stroke: var(--accent); stroke-width: 2.4; stroke-linecap: round; }
+    .preset-table td:nth-child(3) { padding-top: 3px; padding-bottom: 3px; }
+
+    /* FAQ: the questions are the usual fold buttons, a little roomier */
+    #about_faq .how-to-read { margin: 6px 0 10px; font-size: 14px; }
+    #about_faq .how-to-read summary { font-weight: 600; }
+    #about_faq .how-to-read p { font-size: 14px; color: var(--text); max-width: 760px; }
+
+    /* Sources: a small copy button after each reference; "Copied!" shows to its right */
+    .src-copy { position: relative; display: inline-block; margin-left: 6px; padding: 0 6px; border: 1px solid var(--line); border-radius: 4px; background: var(--surface);
+      color: var(--muted); font-size: 12px; line-height: 20px; vertical-align: 1px; cursor: pointer; }
+    .src-copy:hover, .src-copy:focus-visible { color: var(--accent-dark); border-color: var(--accent-line); }
+    .src-copy .fb-b { left: calc(100% + 6px); right: auto; width: max-content; justify-content: flex-start; color: var(--accent-dark); font-size: 12px; background: none; }
+    .src-copy.copied .fb-a { opacity: 1; }
+    .cite-as { align-self: center; font-size: 12px; color: var(--muted); margin-right: 2px; }
+
+    /* "Quick overview" card: the clock beside its title */
+    .read-clock { color: var(--accent); margin-right: 2px; }

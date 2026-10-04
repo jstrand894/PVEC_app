@@ -3,6 +3,7 @@ library(shiny)
 # Shown in the page footer; update when you publish a new version
 LAST_UPDATED <- "October 3, 2026"
 CITE_URL     <- "https://jstrand894.github.io/PVEC_app/"
+REPO_URL     <- "https://github.com/jstrand894/PVEC_app"
 CITE_YEAR    <- sub(".*, ", "", LAST_UPDATED)
 APP_VERSION  <- "1.2"
 
@@ -106,9 +107,19 @@ styer_lt <- lapply(names(styer_pars), function(m) {
   life_table(hazard(m, AGES, p[["a"]], p[["b"]], p[["s"]]))
 })
 names(styer_lt) <- names(styer_pars)
+# Survivorship for the first 120 days under each fitted mortality model, for the animated cohort on the About tab
+COHORT_JSON <- as.character(jsonlite::toJSON(lapply(styer_lt, function(lt) round(lt$lx[1:121], 4)), digits = 4))
 styer_cx <- lapply(styer_lt, age_specific_vc, n = 10, MA2 = 1.5 * 0.75^2)
 r_hat <- uniroot(function(r) ct_stable(styer_lt$exponential, styer_cx$exponential, r, 3) - 11.4,
                  c(0, 1))$root
+# For the age-structure animation: survivorship, and the share of a stable population at each age (using the solved growth rate r)
+AGE_JSON <- as.character(jsonlite::toJSON(list(
+  r  = round(r_hat, 4),
+  ct = list(sync   = as.list(round(sapply(styer_cx, ct_synchronous), 1)),
+            stable = as.list(round(mapply(function(lt, cx) ct_stable(lt, cx, r_hat, 3), styer_lt, styer_cx), 1))),
+  lx = lapply(styer_lt, function(lt) round(lt$lx[1:101], 4)),
+  w  = lapply(styer_lt, function(lt) { w <- lt$lx[seq_len(N_CLASS)] * exp(-r_hat * (seq_len(N_CLASS) - 1)); w <- w / sum(w); round(w[1:81], 5) })),
+  digits = 5, auto_unbox = TRUE))
 
 validation <- data.frame(
   Model                        = names(styer_pars),
@@ -237,6 +248,13 @@ ACCENT <- "#2b6cb0"
 # Plot colours follow the page theme. Inside a plot output, Shiny reports the background and text colour of the
 # element the plot sits in, so a dark card gives a dark plot. Elsewhere (the HTML report, tests) the plots stay light.
 .pv <- new.env()
+# Charts that draw in after a run are drawn twice: the picture on top, and a "frame" copy underneath with everything except the data marks
+# (axes, gridlines, labels, legend, reference lines). pvec.js cuts the data out of the top picture and reveals it, so only the data
+# animates. as_frame() makes a drawing function skip its data marks.
+PV_FRAME <- new.env(); PV_FRAME$on <- FALSE
+frame_only <- function() isTRUE(PV_FRAME$on)
+as_frame <- function(expr) { PV_FRAME$on <- TRUE; on.exit(PV_FRAME$on <- FALSE); force(expr) }
+
 pvec_par <- function() {
   bg <- "#ffffff"; dark <- FALSE
   # The page reports its theme as input$theme. That is steadier than measuring the plot's background, which
@@ -278,9 +296,9 @@ draw_forecast <- function(ct, b, prev = NULL, run_labels = NULL, thresh = NA, bi
     fig_title("Forecast of total vectorial capacity", line = 2)
     for (k in 1:2) {
       if (!is.null(hs[[k]])) {
-        plot(hs[[k]], freq = FALSE, add = TRUE, col = adjustcolor(cols[k], 0.55), border = .pv$bg)
+        if (!frame_only()) plot(hs[[k]], freq = FALSE, add = TRUE, col = adjustcolor(cols[k], 0.55), border = .pv$bg)
         abline(v = median(runs[[k]]), lwd = 2, lty = 2, col = cols[k])
-      } else segments(runs[[k]][1], 0, runs[[k]][1], ytop * 0.9, lwd = 4, col = cols[k])
+      } else if (!frame_only()) segments(runs[[k]][1], 0, runs[[k]][1], ytop * 0.9, lwd = 4, col = cols[k])
     }
     legend("topright", legend = run_labels, fill = adjustcolor(cols, 0.7), border = NA, bty = "n")
     if (has_thresh(thresh)) draw_threshold(ct, thresh)
@@ -289,8 +307,8 @@ draw_forecast <- function(ct, b, prev = NULL, run_labels = NULL, thresh = NA, bi
   h  <- hist(ct, breaks = bins, plot = FALSE)
   xl <- range(h$breaks); if (has_thresh(thresh)) xl <- range(xl, thresh)
   cols <- ifelse(h$mids >= b[1] & h$mids <= b[2], ACCENT, .pv$bar)
-  plot(h, xlim = xl, col = cols,
-       border = .pv$bg, main = "", xlab = "Ct")
+  plot(h, xlim = xl, col = if (frame_only()) NA else cols,
+       border = if (frame_only()) NA else .pv$bg, main = "", xlab = "Ct")
   fig_title("Forecast of total vectorial capacity", line = 2)
   abline(v = median(ct), lwd = 2, lty = 2, col = .pv$fg)
   usr <- par("usr"); md <- median(ct)
@@ -707,9 +725,11 @@ draw_sens <- function(res, metric = "prcc", sc = sens_contrib(res)) {
                   xlab = "Partial rank correlation (PRCC) with Ct, with 95% interval",
                   main = "Sensitivity of Ct to each assumption")
     grid(nx = NULL, ny = NA, col = .pv$grid, lty = 1)
-    barplot(vals, horiz = TRUE, add = TRUE, axes = FALSE, names.arg = NA, col = cols, border = NA)
-    arrows(pr$lo, mp, pr$hi, mp, angle = 90, code = 3, length = 0.04, lwd = 1.2)
-    text(ifelse(vals > 0, pr$hi, pr$lo), mp, sprintf("%.2f", vals), pos = ifelse(vals > 0, 4, 2), cex = 0.8, xpd = NA)
+    if (!frame_only()) {
+      barplot(vals, horiz = TRUE, add = TRUE, axes = FALSE, names.arg = NA, col = cols, border = NA)
+      arrows(pr$lo, mp, pr$hi, mp, angle = 90, code = 3, length = 0.04, lwd = 1.2)
+      text(ifelse(vals > 0, pr$hi, pr$lo), mp, sprintf("%.2f", vals), pos = ifelse(vals > 0, 4, 2), cex = 0.8, xpd = NA)
+    }
     abline(v = 0)
     return(invisible())
   }
@@ -724,9 +744,11 @@ draw_sens <- function(res, metric = "prcc", sc = sens_contrib(res)) {
   if (identical(metric, "var"))
     mtext(sprintf("The bars add up to %.0f%%; the rest comes from assumptions acting together.", sum(vals)), side = 1, line = 4.2, cex = 0.8, col = .pv$muted)
   grid(nx = NULL, ny = NA, col = .pv$grid, lty = 1)
-  barplot(vals, horiz = TRUE, add = TRUE, axes = FALSE, names.arg = NA, col = cols, border = NA)
-  text(vals, mp, if (identical(metric, "rho")) sprintf("%.2f", vals) else sprintf("%.1f%%", vals),
-       pos = ifelse(vals > 0, 4, 2), cex = 0.8, xpd = NA)
+  if (!frame_only()) {
+    barplot(vals, horiz = TRUE, add = TRUE, axes = FALSE, names.arg = NA, col = cols, border = NA)
+    text(vals, mp, if (identical(metric, "rho")) sprintf("%.2f", vals) else sprintf("%.1f%%", vals),
+         pos = ifelse(vals > 0, 4, 2), cex = 0.8, xpd = NA)
+  }
   abline(v = 0)
 }
 
@@ -819,21 +841,34 @@ draw_surv <- function(res, view = "both", lts = surv_tables(res), k = 100, xmax 
     plot(NA, xlim = range(x), ylim = c(0, 1), xlab = "Age (days)", ylab = "Survivorship (fraction alive)",
          main = sprintf("Survivorship, first %d trials", length(lts)), las = 1)
     grid(col = .pv$grid, lty = 1)
-    for (lt in lts) lines(x, lt$lx[x + 1], col = adjustcolor(ACCENT, 0.18))
-    lines(x, apply(sapply(lts, function(lt) lt$lx[x + 1]), 1, median), lwd = 3, col = .pv$fg)
+    if (!frame_only()) {
+      for (lt in lts) lines(x, lt$lx[x + 1], col = adjustcolor(ACCENT, 0.18))
+      lines(x, apply(sapply(lts, function(lt) lt$lx[x + 1]), 1, median), lwd = 3, col = .pv$fg)
+    }
     ne <- median(res$draws$n_eip[seq_along(lts)]); abline(v = ne, lty = 3, lwd = 2, col = "#D55E00")
-    if (!is.null(hl) && hl <= length(lts)) lines(x, lts[[hl]]$lx[x + 1], lwd = 3, col = "#7b2cbf")
+    if (!frame_only() && !is.null(hl) && hl <= length(lts)) lines(x, lts[[hl]]$lx[x + 1], lwd = 3, col = "#7b2cbf")
     legend("topright", bty = "n", lty = c(1, 3), lwd = c(3, 2), col = c(.pv$fg, "#D55E00"), cex = 0.9,
            legend = c("Median of the trials", sprintf("Median incubation period, %s days", fmt3(ne))))
   }
   if (view %in% c("both", "hazard")) {
-    ymax <- max(sapply(lts, function(lt) max(lt$u[x + 1])))
+    # The scale is set by the ages where mosquitoes are still alive (median survivorship at least 1%), using the 90th percentile of the
+    # trials. Later on nearly every mosquito is dead, and under the Gompertz hazard a few trials rise by many orders of magnitude, so
+    # letting those ages set the scale would squash the curves that matter flat. Showing more days therefore just extends the chart
+    # to the right, and anything rising above the top is cut off.
+    U    <- matrix(vapply(lts, function(lt) lt$u[x + 1], numeric(length(x))), nrow = length(x))
+    Lm   <- apply(matrix(vapply(lts, function(lt) lt$lx[x + 1], numeric(length(x))), nrow = length(x)), 1, median)
+    med  <- apply(U, 1, median)
+    use  <- which(Lm >= 0.01); if (length(use) < 5) use <- seq_len(min(length(x), 10))
+    ymax <- 1.15 * max(apply(U[use, , drop = FALSE], 1, quantile, probs = 0.9), med[use])
     plot(NA, xlim = range(x), ylim = c(0, ymax), xlab = "Age (days)", ylab = "Daily mortality hazard",
          main = sprintf("Daily mortality hazard, first %d trials", length(lts)), las = 1)
     grid(col = .pv$grid, lty = 1)
-    for (lt in lts) lines(x, lt$u[x + 1], col = adjustcolor("#D55E00", 0.18))
-    lines(x, apply(sapply(lts, function(lt) lt$u[x + 1]), 1, median), lwd = 3, col = .pv$fg)
-    if (!is.null(hl) && hl <= length(lts)) lines(x, lts[[hl]]$u[x + 1], lwd = 3, col = "#7b2cbf")
+    if (!frame_only()) {
+      for (lt in lts) lines(x, lt$u[x + 1], col = adjustcolor("#D55E00", 0.18))
+      lines(x, med, lwd = 3, col = .pv$fg)
+    }
+    if (!frame_only() && !is.null(hl) && hl <= length(lts)) lines(x, lts[[hl]]$u[x + 1], lwd = 3, col = "#7b2cbf")
+    if (any(U > ymax)) text(par("usr")[2], par("usr")[4], "Lines above the top are cut off", adj = c(1.04, 1.8), cex = 0.75, col = .pv$muted)
     legend("topleft", bty = "n", lty = 1, lwd = 3, col = .pv$fg, legend = "Median of the trials", cex = 0.9)
   }
 }
@@ -912,12 +947,14 @@ png_b64 <- function(drawer, w, h) {
   b64_encode(raw)
 }
 
-html_table <- function(df) {
+html_table <- function(df, raw = character()) {      # columns named in `raw` already hold HTML (the preset shapes)
   esc  <- htmltools::htmlEscape
   head <- paste0("<tr>", paste0("<th>", esc(names(df)), "</th>", collapse = ""), "</tr>")
   rows <- vapply(seq_len(nrow(df)), function(i)
-    paste0("<tr>", paste0("<td>", esc(vapply(df[i, ], function(x) if (is.numeric(x)) fmt3(x) else as.character(x), "")),
-                          "</td>", collapse = ""), "</tr>"), "")
+    paste0("<tr>", paste0(vapply(seq_along(df), function(j) {
+      x <- df[[j]][i]; cell <- if (is.numeric(x)) fmt3(x) else as.character(x)
+      paste0("<td>", if (names(df)[j] %in% raw) cell else esc(cell), "</td>")
+    }, ""), collapse = ""), "</tr>"), "")
   paste0("<table>", head, paste(rows, collapse = ""), "</table>")
 }
 
@@ -1093,8 +1130,8 @@ tool_panel <- function(id, title, ...)
       div(class = "tool-panel-in", div(class = "tool-card", h4(class = "tool-card-title", title), ...)))
 
 # One "Download" menu per tab: a button that drops up a list of the downloads for that tab
-dl_menu <- function(...)
-  div(class = "btn-group dropup dl-menu no-print",
+dl_menu <- function(..., up = TRUE)
+  div(class = paste("btn-group", if (up) "dropup" else "dropdown", "dl-menu no-print"),
       tags$button(type = "button", class = "btn btn-default btn-sm dropdown-toggle", `data-toggle` = "dropdown",
                   `aria-haspopup` = "true", `aria-expanded` = "false", icon("download"), " Download ", span(class = "caret")),
       tags$ul(class = "dropdown-menu", role = "menu", ...))
@@ -1105,11 +1142,27 @@ dl_img_item <- function(target, file, label = "Plot image (PNG)", cls = "dl-img"
 how_to <- function(title, ...) tags$details(class = "how-to-read", tags$summary(title), ...)
 
 # The two presets side by side, built from the specs the app itself uses (mortality shown for the logistic model)
+# A small picture of an assumption's distribution (a flat top for Uniform, a curve for the others, one line when Fixed) for the Presets table
+spark_svg <- function(sp, w = 84, h = 26) {
+  pad <- 2; open <- sprintf('<svg class="spark" viewBox="0 0 %d %d" width="%d" height="%d" aria-hidden="true" focusable="false">', w, h, w, h)
+  if (identical(sp$dist, "Fixed"))
+    return(paste0(open, sprintf('<line x1="%g" y1="%g" x2="%g" y2="%g"/></svg>', w / 2, pad, w / 2, h - pad)))
+  if (identical(sp$dist, "Uniform"))
+    return(paste0(open, sprintf('<path d="M%g %gL%g %gL%g %gL%g %gZ"/></svg>', pad, h - pad, pad, pad + 4, w - pad, pad + 4, w - pad, h - pad)))
+  x  <- qdraw(ppoints(400), sp)
+  dn <- density(x, from = min(x), to = max(x), adjust = 1.3, n = 60)
+  xs <- pad + (w - 2 * pad) * (dn$x - min(dn$x)) / diff(range(dn$x))
+  ys <- (h - pad) - (h - 2 * pad - 2) * dn$y / max(dn$y)
+  d  <- paste0("M", paste(sprintf("%.1f %.1f", xs, ys), collapse = "L"), sprintf("L%g %gL%g %gZ", w - pad, h - pad, pad, h - pad))
+  paste0(open, '<path d="', d, '"/></svg>')
+}
+
 preset_table <- function() {
   ids <- c(names(vc_specs), names(mort_specs$logistic), names(pop_specs))
   base <- c(vc_specs, mort_specs$logistic, pop_specs)
   data.frame(Assumption = unname(labels[ids]),
              `Literature preset` = vapply(ids, function(id) { sp <- base[[id]]; sp$dist <- lit_dists[[id]]; paste0(sp$dist, ": ", describe_spec(sp)) }, ""),
+             Shape = vapply(ids, function(id) { sp <- base[[id]]; sp$dist <- lit_dists[[id]]; spark_svg(sp) }, ""),
              `Fixed preset` = vapply(ids, function(id) { sp <- base[[id]]; sp$dist <- "Fixed"; paste0("Fixed: ", describe_spec(sp)) }, ""),
              check.names = FALSE, row.names = NULL, stringsAsFactors = FALSE)
 }
@@ -1222,6 +1275,9 @@ jump_chip <- function(target, text)
 # ---- UI ----
 CITE_TEXT <- sprintf("Strand, J. R. (%s). PVEC: Probabilistic Vectorial Capacity Simulator (Version %s) [Computer software]. %s",
                      CITE_YEAR, APP_VERSION, CITE_URL)
+CITE_MLA     <- sprintf("Strand, Jackson R. PVEC: Probabilistic Vectorial Capacity Simulator. Version %s, %s, %s.", APP_VERSION, CITE_YEAR, CITE_URL)
+CITE_CHICAGO <- sprintf("Strand, Jackson R. %s. \u201cPVEC: Probabilistic Vectorial Capacity Simulator.\u201d Version %s. %s.", CITE_YEAR, APP_VERSION, CITE_URL)
+CITE_RIS     <- sprintf("TY  - COMP\nAU  - Strand, Jackson R.\nTI  - PVEC: Probabilistic Vectorial Capacity Simulator\nPY  - %s\nET  - %s\nUR  - %s\nER  - ", CITE_YEAR, APP_VERSION, CITE_URL)
 CITE_BIBTEX <- sprintf("@software{strand_pvec,\n  author  = {Strand, Jackson R.},\n  title   = {{PVEC}: Probabilistic Vectorial Capacity Simulator},\n  year    = {%s},\n  version = {%s},\n  url     = {%s}\n}",
                        CITE_YEAR, APP_VERSION, CITE_URL)
 
@@ -1231,6 +1287,14 @@ src_uses <- function(cards = character(), tabs = character())
   div(class = "src-uses", span("Used for: "),
       lapply(cards, function(id) tags$button(type = "button", class = "src-link", `data-card` = id, labels[[id]])),
       lapply(names(tabs), function(t) tags$button(type = "button", class = "src-link", `data-tab` = tabs[[t]], t)))
+
+# One reference in the Sources list, with a button that copies it (text and link) for pasting elsewhere
+src_item <- function(ref, href, link_text, uses)
+  tags$li(span(class = "src-ref", ref, " ", tags$a(href = href, target = "_blank", rel = "noopener", link_text)),
+          tags$button(type = "button", class = "src-copy cite-btn fade-btn", `data-cite` = paste(ref, href), title = "Copy this reference",
+                      `aria-label` = "Copy this reference",
+                      span(class = "fb-a", icon("copy")), span(class = "fb-b", `aria-live` = "polite")),
+          uses)
 
 MIN_TRIALS <- 10
 MAX_TRIALS <- 50000
@@ -1283,7 +1347,7 @@ ui <- fluidPage(
             span(class = "help-tip-text",
               strong("Stable: "), "the population has settled into a steady mix of ages (0 to 199 days). Only mosquitoes old enough to have taken a first bite contribute to Ct.",
               br(), br(),
-              strong("Synchronous: "), "all mosquitoes hatch together as one cohort, and Ct averages the daily capacity over ages 3 to 6 days."))),
+              strong("Synchronous: "), "the population is made up entirely of young adults, spread equally over ages 3 to 6 days, and Ct averages the daily capacity over those ages."))),
         c("Stable" = "stable", "Synchronous" = "synchronous")),
       fluidRow(
         column(6, div(class = "trials-box", textInput("n_iter", "Trials", "1,000"))),
@@ -1456,32 +1520,32 @@ ui <- fluidPage(
         tabPanel("Forecast",
           empty_state("Run a simulation to see the forecast of Ct, the chance it exceeds a threshold, and the summary statistics."),
           div(class = "results-body",
-          uiOutput("ctx_forecast"),
           uiOutput("insight_forecast"),
           uiOutput("forecast_summary", class = "smooth-h"),
-          how_to("How to read this chart",
-            p("Each bar counts how many trials gave a Ct in that range. The dashed line is the median. Dark bars fall inside",
-              "the certainty range you set (all bars when none is set). Drag across the chart to set the range, or type it.",
-              "Type a threshold, or click the chart to place one, to see the chance that Ct exceeds it.",
-              "More bins show finer detail but a noisier shape.")),
           div(class = "plot-card",
-            div(class = "plot-controls no-print",
-              numericInput("cert_lo", "Range from", NA, step = 0.1, width = "150px"),
-              numericInput("cert_hi", "Range to", NA, step = 0.1, width = "150px"),
-              numericInput("thresh", "Threshold", NA, step = 0.1, width = "150px"),
-              sliderInput("bins", "Bins", 10, 100, 50, step = 5, width = "170px", ticks = FALSE)),
-            uiOutput("cert_text", class = "smooth-h"),
             div(class = "chart-hint no-print", `data-hint` = "forecast", icon("hand-pointer"), span("Tip: drag across the chart to set a range, or click it to place a threshold."),
                 tags$button(type = "button", class = "chart-hint-x", `aria-label` = "Dismiss this tip", HTML("&times;"))),
             div(class = "tip-cell",
               plotOutput("forecast_plot", height = 400, click = "forecast_click",
                          brush = brushOpts("forecast_brush", direction = "x", resetOnNew = FALSE, delay = 300, delayType = "debounce",
                                            fill = "#2b6cb0", opacity = 0.15, stroke = "#2b6cb0")),
-              uiOutput("forecast_reset", class = "reset-float")),
-            div(class = "dl-row",
+              div(class = "plot-frame", `aria-hidden` = "true", plotOutput("forecast_frame", height = 400)),
+              uiOutput("forecast_reset", class = "reset-float"),
+              # Download floats over the top-right corner of the plot, so it takes no row of its own
               dl_menu(dl_img_item("forecast_plot", "forecast_Ct.png"),
                       tags$li(downloadLink("dl_csv", "Results (CSV)")),
-                      tags$li(downloadLink("dl_report", "Report (HTML)"))))),
+                      tags$li(downloadLink("dl_report", "Report (HTML)")), up = FALSE)),
+            uiOutput("cert_text", class = "smooth-h"),
+            div(class = "plot-controls no-print",
+              numericInput("cert_lo", "Range from", NA, step = 0.1, width = "150px"),
+              numericInput("cert_hi", "Range to", NA, step = 0.1, width = "150px"),
+              numericInput("thresh", "Threshold", NA, step = 0.1, width = "150px"),
+              sliderInput("bins", "Bins", 10, 100, 50, step = 5, width = "170px", ticks = FALSE)),
+            how_to("How to read this chart",
+              p("Each bar counts how many trials gave a Ct in that range. The dashed line is the median. Dark bars fall inside",
+                "the certainty range you set (all bars when none is set). Drag across the chart to set the range, or type it.",
+                "Type a threshold, or click the chart to place one, to see the chance that Ct exceeds it.",
+                "More bins show finer detail but a noisier shape."))),
           div(class = "tools no-print",
             div(class = "tools-head", span(class = "tools-title", "Dig deeper"), span(class = "tools-sub", "More views of this forecast. Pick one to open it.")),
             div(class = "tool-tabs", role = "group", `aria-label` = "More views of this forecast",
@@ -1514,28 +1578,27 @@ ui <- fluidPage(
         tabPanel("Sensitivity",
           empty_state("Run a simulation to see which assumptions move Ct the most."),
           div(class = "results-body",
-          uiOutput("ctx_sens"),
           uiOutput("insight_sens"),
           p(class = "tab-lead", "Which assumptions move Ct the most? Blue bars raise Ct and orange bars lower it. Click a driver, or a bar, to see Ct plotted against that assumption."),
           uiOutput("sens_top"),
-          how_to("How to read this chart",
-            p("The default, the partial rank correlation coefficient (PRCC), is the rank correlation between one",
-              "assumption and Ct after removing the effect of all the others, from -1 to 1, with a 95% interval.",
-              "Assumptions that are fixed do not vary and are left out. If you have linked assumptions or uploaded",
-              "draws, read the values with care: the inputs are no longer independent. The model itself has no random",
-              "noise, so PRCC values are often large; compare their order and sign more than their size.")),
           div(class = "plot-card",
             div(class = "no-print seg-wrap",
               radioButtons("sens_metric", NULL, inline = TRUE, selected = "prcc",
                            c("PRCC" = "prcc", "Rank correlation" = "rho", "Share of squared correlation" = "contrib", "Share of variance" = "var"))),
             uiOutput("sens_caption", class = "smooth-h"),
             div(class = "tip-cell",
-              plotOutput("sens_plot", height = 400, click = "sens_click")),
-            div(class = "dl-row", dl_menu(dl_img_item("sens_plot", "sensitivity.png")))))),
+              plotOutput("sens_plot", height = 400, click = "sens_click"),
+              div(class = "plot-frame", `aria-hidden` = "true", plotOutput("sens_frame", height = 400)),
+              dl_menu(dl_img_item("sens_plot", "sensitivity.png"), up = FALSE)),
+            how_to("How to read this chart",
+              p("The default, the partial rank correlation coefficient (PRCC), is the rank correlation between one",
+                "assumption and Ct after removing the effect of all the others, from -1 to 1, with a 95% interval.",
+                "Assumptions that are fixed do not vary and are left out. If you have linked assumptions or uploaded",
+                "draws, read the values with care: the inputs are no longer independent. The model itself has no random",
+                "noise, so PRCC values are often large; compare their order and sign more than their size."))))),
         tabPanel("Assumption draws",
           empty_state("Run a simulation to see the values drawn for each assumption."),
           div(class = "results-body",
-          uiOutput("ctx_draws"),
           uiOutput("insight_draws"),
           p(class = "tab-lead", "The values each assumption took across all trials. Click any card to enlarge it."),
           div(class = "draws-toolbar no-print",
@@ -1552,7 +1615,6 @@ ui <- fluidPage(
         tabPanel("Survival curves",
           empty_state("Run a simulation to see survivorship and mortality curves for the first 100 trials."),
           div(class = "results-body",
-          uiOutput("ctx_surv"),
           uiOutput("insight_surv"),
           p(class = "tab-lead", "How long mosquitoes live under each trial's mortality assumptions. Each faint line is one trial. Hover a line to see that trial's values."),
           uiOutput("surv_tiles"),
@@ -1575,11 +1637,13 @@ ui <- fluidPage(
                 plotOutput("surv_plot_s", height = 450, hover = hoverOpts("surv_hover_s", delay = 120, delayType = "debounce"),
                            brush = brushOpts("surv_brush_s", direction = "x", resetOnNew = TRUE, delay = 400, delayType = "debounce",
                                              fill = "#2b6cb0", opacity = 0.15, stroke = "#2b6cb0")),
+                div(class = "plot-frame", `aria-hidden` = "true", plotOutput("surv_frame_s", height = 450)),
                 uiOutput("surv_tip_s")),
               conditionalPanel("input.surv_view != 'surv'", class = "combine-img surv-cell",
                 plotOutput("surv_plot_h", height = 450, hover = hoverOpts("surv_hover_h", delay = 120, delayType = "debounce"),
                            brush = brushOpts("surv_brush_h", direction = "x", resetOnNew = TRUE, delay = 400, delayType = "debounce",
                                              fill = "#2b6cb0", opacity = 0.15, stroke = "#2b6cb0")),
+                div(class = "plot-frame", `aria-hidden` = "true", plotOutput("surv_frame_h", height = 450)),
                 uiOutput("surv_tip_h"))),
             div(class = "dl-row", dl_menu(dl_img_item("surv_wrap", "survival_curves.png", cls = "dl-grid")))),
           div(class = "plot-card",
@@ -1606,8 +1670,10 @@ ui <- fluidPage(
               "stable-age case, so that row matches by construction and the other five are independent checks. Published",
               "values are rounded to one decimal place, so small differences are expected.")),
           div(class = "table-tools", copy_btn("validation")),
-          div(class = "clean-table", style = "overflow-x: auto;", tableOutput("validation")),
-          div(class = "mc-legend", span(class = "mc-pass", "\u2713 within 1%"), span(class = "mc-warn", "~ within 5%"), span(class = "mc-fail", "\u2717 5% or more")),
+          # The key sits in a box only as wide as the table, so its right edge lines up with the table's
+          div(class = "mc-table-wrap",
+            div(class = "clean-table", style = "overflow-x: auto;", tableOutput("validation")),
+            div(class = "mc-legend", span(class = "mc-pass", "\u2713 within 1%"), span(class = "mc-warn", "~ within 5%"), span(class = "mc-fail", "\u2717 5% or more"))),
           h4(class = "mc-head", "Comparison for the paper"),
           p(class = "tab-lead", "Published, deterministic and two probabilistic runs side by side, for each mortality model and age structure."),
           tags$details(class = "how-to-read",
@@ -1637,42 +1703,29 @@ ui <- fluidPage(
         tabPanel("About",
           div(class = "about",
           div(class = "jump-bar", role = "navigation", `aria-label` = "Jump to a section",
-            jump_chip("about_quick", "In one minute"), jump_chip("about_cite", "Cite"),
-            jump_chip("about_what", "Overview"), jump_chip("about_model", "Model"), jump_chip("about_presets", "Presets"),
-            jump_chip("about_methods", "Methods"), jump_chip("about_sources", "Sources"),
-            jump_chip("about_author", "Author")),
+            jump_chip("about_quick", "Overview"), jump_chip("about_model", "Model"), jump_chip("about_presets", "Presets"),
+            jump_chip("about_methods", "Methods"), jump_chip("about_limits", "Limitations"), jump_chip("about_faq", "FAQ"), jump_chip("about_sources", "Sources"),
+            jump_chip("about_cite", "Cite")),
           div(class = "about-card about-section about-callout", id = "about_quick",
-            h4("In one minute"),
+            h4(icon("clock", class = "read-clock"), " Quick overview"),
             tags$ul(class = "quick-list",
               tags$li(strong("What it is. "), "A simulator that shows how uncertain mosquito and transmission inputs spread into uncertainty in vectorial capacity (Ct)."),
               tags$li(HTML("<strong>How to use it.</strong> Pick a preset or edit the assumptions, press <strong>Run simulation</strong>, then read the Forecast tab.")),
               tags$li(strong("What you get. "), "A distribution of Ct, which inputs drive it, the values drawn, and how long the mosquitoes live."),
               tags$li(strong("What to trust. "), "The Model check tab reproduces Styer et al. (2007) within about 0.5%. The default distributions come from the literature, not from field data for one place."))),
-          div(class = "about-card about-section about-callout cite-card", id = "about_cite",
-            h4("How to cite"),
-            p(class = "cite-text", CITE_TEXT),
-            div(class = "cite-actions",
-              tags$button(type = "button", class = "btn btn-default btn-sm fade-btn cite-btn", `data-cite` = CITE_TEXT,
-                          span(class = "fb-a", icon("quote-right"), " Copy citation"), span(class = "fb-b", `aria-live` = "polite")),
-              tags$button(type = "button", class = "btn btn-default btn-sm fade-btn cite-btn", `data-cite` = CITE_BIBTEX,
-                          span(class = "fb-a", icon("file-lines"), " Copy BibTeX"), span(class = "fb-b", `aria-live` = "polite")))),
-          div(class = "about-card about-section", id = "about_what",
-          h4("What this tool does"),
-          p(class = "about-lead", "PVEC (Probabilistic VECtorial capacity) propagates uncertainty in transmission and mosquito mortality parameters",
-            "through an age-specific vectorial capacity model. Each assumption can be fixed or",
-            "given a probability distribution; the simulation draws parameter sets at random and",
-            "reports the resulting distribution of vectorial capacity (Ct), along with a",
-            "sensitivity ranking of the inputs."),
-          p(strong("Ct"), "is total vectorial capacity: age-specific vectorial capacity combined",
-            "across the age structure of the mosquito population (a stable age distribution or",
-            "synchronous emergence).")),
           div(class = "about-card about-section", id = "about_model",
-          h4("Model structure"),
+          h4("Model"),
+          p(class = "about-lead", strong("Ct"), "is total vectorial capacity: age-specific vectorial capacity combined",
+            "across the age structure of the mosquito population (a stable age distribution or",
+            "synchronous emergence). Each assumption can be fixed or given a probability distribution, and the simulation",
+            "draws parameter sets at random to give a distribution of Ct and a sensitivity ranking of the inputs."),
           p("Vectorial capacity follows the classical formulation of Macdonald (1957) and",
             "Garrett-Jones (1964), extended to age-dependent mortality and extrinsic incubation",
             "following Styer et al. (2007). Mortality can follow exponential, Gompertz, or",
-            "logistic hazards. Vector competence enters as a multiplicative term. Population age",
-            "structure can be a stable age distribution or synchronous emergence."),
+            "logistic hazards. Vector competence enters as a multiplicative term."),
+          p(class = "eq-plain", strong("In plain terms: "), "a mosquito adds to transmission only if it survives the incubation period, and then each day",
+            "it lives it bites people at a certain rate. Older mosquitoes are less likely to survive, so how mortality changes with age matters.",
+            "The equations show how these pieces combine."),
           div(class = "fold", id = "eq_fold",
             tags$button(id = "eq_toggle", type = "button", class = "adv-toggle", `aria-expanded` = "false",
                         `aria-controls` = "eq_body",
@@ -1714,7 +1767,56 @@ ui <- fluidPage(
           eq(v("C"), sub_(h("t", ",", v("i"))), " = ", v("f"), "(", v("θ"), sub_("i"), "),   ", v("i"), " = 1, …, ", v("N")),
           P(class = "eq-note", "The forecast is the distribution of ", v("C"), sub_("t,i"), ". The incubation period ", v("n"),
             " is rounded to a whole day between 1 and 150. Setting every assumption to Fixed gives the deterministic model that the Model check tab compares with Styer et al. (2007). ",
-            "Sensitivity is the partial rank correlation of each input with ", v("C"), sub_("t"), ".")))))),
+            "Sensitivity is the partial rank correlation of each input with ", v("C"), sub_("t"), "."))))),
+          div(class = "cohort", id = "cohort", `data-lx` = COHORT_JSON,
+            div(class = "cohort-head", strong("Watch a cohort age"),
+              div(class = "cohort-models", role = "group", `aria-label` = "Mortality model",
+                lapply(c("exponential", "gompertz", "logistic"), function(m)
+                  tags$button(type = "button", class = paste("cohort-m", if (m == "logistic") "on"), `data-model` = m,
+                              `aria-pressed` = if (m == "logistic") "true" else "false", tools::toTitleCase(m))))),
+            tags$canvas(class = "cohort-canvas", role = "img", `aria-label` = "Dots for 240 mosquitoes dying off over time"),
+            div(class = "cohort-bar",
+              tags$button(type = "button", class = "btn btn-default btn-sm cohort-play", `aria-label` = "Play or pause", icon("play"), " Play"),
+              tags$input(type = "range", class = "cohort-scrub", min = 0, max = 1000, value = 0, `aria-label` = "Day of the simulation"),
+              span(class = "cohort-read")),
+            p(class = "cohort-note", "Each dot is one mosquito. They die at the rate given by the mortality model, using the values Styer et al. (2007) fitted. The curve shows the share still alive.")),
+          div(class = "cohort demo", id = "agedemo", `data-age` = AGE_JSON,
+            div(class = "cohort-head", strong("Synchronous and stable age structure"),
+              div(class = "cohort-models", role = "group", `aria-label` = "Mortality model",
+                lapply(c("exponential", "gompertz", "logistic"), function(m)
+                  tags$button(type = "button", class = paste("cohort-m", if (m == "logistic") "on"), `data-model` = m,
+                              `aria-pressed` = if (m == "logistic") "true" else "false", tools::toTitleCase(m))))),
+            tags$canvas(class = "cohort-canvas", role = "img", `aria-label` = "The share of mosquitoes at each age in a synchronous and a stable population"),
+            div(class = "cohort-bar", span(class = "cohort-read")),
+            p(class = "cohort-note", "Both bars show the share of the population at each age (each population adds up to 100%, on the same scale).",
+              "Synchronous emergence is a population made up entirely of young adults, spread equally over ages 3 to 6 days, and Ct is averaged over those ages. In a stable age distribution adults keep emerging, so every age is present, with the most young and the fewest old.",
+              "A young mosquito has more life ahead and is more likely to survive the incubation period, so the all-young population has the higher Ct (Styer et al. 2007). The Ct values shown come from this app's model, which matches the published ones to within about 0.5% (see the Model check tab).")),
+          div(class = "cohort demo", id = "racedemo", `data-lx` = COHORT_JSON,
+            div(class = "cohort-head", strong("Who survives the incubation period?"),
+              div(class = "cohort-models", role = "group", `aria-label` = "Mortality model",
+                lapply(c("exponential", "gompertz", "logistic"), function(m)
+                  tags$button(type = "button", class = paste("cohort-m", if (m == "logistic") "on"), `data-model` = m,
+                              `aria-pressed` = if (m == "logistic") "true" else "false", tools::toTitleCase(m))))),
+            tags$canvas(class = "cohort-canvas", role = "img", `aria-label` = "Mosquitoes surviving the incubation period"),
+            div(class = "cohort-bar",
+              tags$button(type = "button", class = "btn btn-default btn-sm cohort-play", `aria-label` = "Play or pause", icon("play"), " Play"),
+              tags$label(class = "race-n", "Incubation period:",
+                         tags$input(type = "range", class = "race-days", min = 4, max = 16, value = 10, `aria-label` = "Incubation period in days"),
+                         span(class = "race-days-out", "10 days")),
+              span(class = "cohort-read")),
+            p(class = "cohort-note", "Every dot is a mosquito that has just picked up a pathogen. The pathogen needs the incubation period to develop before the mosquito can pass it on, so only mosquitoes that live that long can transmit.",
+              "Press play, then change the length of the incubation period to see how that changes the share that make it.")),
+          how_to("Terms used in this app",
+            tags$dl(class = "terms",
+              tags$dt("Vectorial capacity (Ct)"), tags$dd("How much transmission potential one mosquito population has: the expected number of potentially infectious bites that result from the bites of one day's mosquitoes. It is an index, not a count of cases."),
+              tags$dt("Trial"), tags$dd("One run of the model with one randomly drawn value for every assumption."),
+              tags$dt("Assumption"), tags$dd("An input to the model, such as biting rate. It can be a single value or a distribution of plausible values."),
+              tags$dt("Extrinsic incubation period"), tags$dd("Days a mosquito needs after an infectious blood meal before it can pass the pathogen on."),
+              tags$dt("Vector competence"), tags$dd("The chance that a mosquito that took an infectious blood meal becomes able to transmit."),
+              tags$dt("Stable age distribution"), tags$dd("A population in which adults keep emerging, so every age is present. The share at each age follows from survivorship and the growth rate (the Lotka equation)."),
+              tags$dt("Synchronous emergence"), tags$dd("A population made up entirely of young adults, spread equally over ages 3 to 6 days, so Ct is averaged over those ages."),
+              tags$dt("Rank correlation"), tags$dd("How strongly two assumptions rise and fall together, measured on their ranks. Linking assumptions imposes one, using a Gaussian copula."),
+              tags$dt("PRCC"), tags$dd("Partial rank correlation coefficient: how strongly one input is tied to Ct once the other inputs are accounted for. Used for the Sensitivity tab.")))),
           div(class = "about-card about-section", id = "about_presets",
             h4("Presets"),
             p("A preset sets every assumption at once. Pick one in the side panel, then change any assumption by hand."),
@@ -1726,7 +1828,7 @@ ui <- fluidPage(
                       "and a baseline for seeing how much the uncertainty changes the result. The mortality values are the ones fitted by Styer et al. for the chosen mortality model, and the growth rate is solved so the exponential, stable-age case matches their published Ct.")),
             how_to("Show every assumption's values",
               p(class = "preset-table-lead", "The values below are for the logistic mortality model; the exponential and Gompertz models use their own fitted mortality values."),
-              div(class = "clean-table preset-table", style = "overflow-x: auto;", HTML(html_table(preset_table()))))),
+              div(class = "clean-table preset-table", style = "overflow-x: auto;", HTML(html_table(preset_table(), raw = "Shape"))))),
           div(class = "about-card about-section", id = "about_methods",
           h4("Methods notes"),
           tags$ul(
@@ -1742,33 +1844,82 @@ ui <- fluidPage(
                     "Ct, so treat it as a calibration, not a field estimate."),
             tags$li(strong("Sensitivity. "), "Sensitivity uses partial rank correlation coefficients (PRCC) with 95% intervals. The older",
                     "share-of-squared-correlation view is a rough guide, not a variance decomposition."))),
+          div(class = "about-card about-section", id = "about_limits",
+          h4("Limitations"),
+          p("Read results with these in mind:"),
+          tags$ul(
+            tags$li(strong("An index, not a forecast. "), "Ct measures transmission potential of a mosquito population. It does not predict cases or outbreaks,",
+                    "and it ignores human immunity, movement and the course of infection in people. The optional R\u2080 conversion needs inputs you supply."),
+            tags$li(strong("Literature, not local data. "), "The default ranges come from published estimates, not from field data for one place or season.",
+                    "Use your own distributions if you have local data."),
+            tags$li(strong("Fixed pieces. "), "Mortality follows one of three hazard forms, ages run from 0 to 199 days, and the incubation period is",
+                    "rounded to a whole day between 1 and 150. The default growth rate and age at first bite are fixed or calibrated, not measured."),
+            tags$li(strong("No seasonality, space or control. "), "The model has no seasons, geography, vector control or changing populations over time."),
+            tags$li(strong("Temperature is a what-if. "), "The temperature option scales the incubation period, the initial mortality hazard and the biting rate",
+                    "by the chosen curves. It is a scenario to explore, not a climate projection."),
+            tags$li(strong("Independent by default. "), "Assumptions are drawn independently unless you link them, and the sensitivity ranking describes",
+                    "this model and these ranges only."))),
+          div(class = "about-card about-section", id = "about_faq",
+            h4("Frequently asked questions"),
+            how_to("Why does Ct come out as a spread of values, not one number?",
+              p("Each assumption is uncertain, so every trial draws its own value for each one. The spread of Ct across trials shows how much",
+                "that uncertainty in the inputs matters. Setting every assumption to Fixed gives one number, the deterministic baseline.")),
+            how_to("Stable or synchronous age structure: which should I use?",
+              p("Stable describes a population in which adults keep emerging, so every age is present, with many young mosquitoes and few old ones.",
+                "Synchronous describes a population made up entirely of young adults (spread equally over ages 3 to 6 days), as in the model of Styer et al. (2007).",
+                "Because young mosquitoes have more life ahead of them, it gives a higher Ct, by 73 to 94% in that paper. If you are unsure, the default, stable, is the usual choice.")),
+            how_to("How many trials do I need?",
+              p("A thousand trials is enough to see the shape of the forecast. More trials tighten the estimate of the median, and the run line under the Run",
+                "button says how accurate it is. Ten thousand is a good choice for numbers you plan to report.")),
+            how_to("Why are the sensitivity values (PRCC) often so large?",
+              p("The model has no random noise: Ct is a fixed function of its inputs. Once the other inputs are accounted for, an input's effect is clean,",
+                "so values near 1 or -1 are common. Compare the order and sign of the drivers more than their size.")),
+            how_to("Can I use my own data?",
+              p("Yes. Give any assumption its own distribution, use Fit from a reported range on its card if you have a published interval, or upload joint",
+                "draws (for example posterior samples) so correlations between assumptions are kept.")),
+            how_to("Is Ct a forecast of cases?",
+              p("No. Ct measures the transmission potential of a mosquito population. See Limitations above for what it leaves out."))),
           div(class = "about-card about-section", id = "about_sources",
           h4("Sources"),
           tags$ol(class = "about-refs",
-            tags$li("Macdonald G (1957) The Epidemiology and Control of Malaria. Oxford University Press. ",
-                    tags$a(href = "https://archive.org/details/in.ernet.dli.2015.549644/page/n11/mode/2up", target = "_blank", "Internet Archive"),
-                    src_uses(c("a_bite", "m_dens", "vec_comp", "n_eip"))),
-            tags$li("Garrett-Jones C (1964) Prognosis for interruption of malaria transmission through assessment of the mosquito's vectorial capacity. Nature 204:1173-1175. ",
-                    tags$a(href = "https://doi.org/10.1038/2041173a0", target = "_blank", "https://doi.org/10.1038/2041173a0"),
-                    src_uses(c("a_bite", "m_dens", "vec_comp", "n_eip"))),
-            tags$li("Styer LM, Carey JR, Wang J-L, Scott TW (2007) Mosquitoes do senesce: departure from the paradigm of constant mortality. Am J Trop Med Hyg 76:111-117. ",
-                    tags$a(href = "https://doi.org/10.4269/ajtmh.2007.76.111", target = "_blank", "https://doi.org/10.4269/ajtmh.2007.76.111"),
-                    src_uses(c("mort_a", "mort_b", "mort_s", "growth_r"), c("Model check" = "Model check")))),
+            src_item("Macdonald G (1957) The Epidemiology and Control of Malaria. Oxford University Press.",
+                     "https://archive.org/details/in.ernet.dli.2015.549644/page/n11/mode/2up", "Internet Archive",
+                     src_uses(c("a_bite", "m_dens", "vec_comp", "n_eip"))),
+            src_item("Garrett-Jones C (1964) Prognosis for interruption of malaria transmission through assessment of the mosquito's vectorial capacity. Nature 204:1173-1175.",
+                     "https://doi.org/10.1038/2041173a0", "https://doi.org/10.1038/2041173a0",
+                     src_uses(c("a_bite", "m_dens", "vec_comp", "n_eip"))),
+            src_item("Styer LM, Carey JR, Wang J-L, Scott TW (2007) Mosquitoes do senesce: departure from the paradigm of constant mortality. Am J Trop Med Hyg 76:111-117.",
+                     "https://doi.org/10.4269/ajtmh.2007.76.111", "https://doi.org/10.4269/ajtmh.2007.76.111",
+                     src_uses(c("mort_a", "mort_b", "mort_s", "growth_r"), c("Model check" = "Model check")))),
           p("Parameter ranges and distributions are from the literature as described in the",
             "accompanying paper.")),
-          div(class = "cite-row",
+          div(class = "about-pair",
+          div(class = "about-card about-section about-callout cite-card", id = "about_cite",
+            h4("How to cite"),
+            p(class = "cite-text", CITE_TEXT),
+            div(class = "cite-actions",
+              span(class = "cite-as", "Copy as"),
+              lapply(list(list("APA", CITE_TEXT), list("MLA", CITE_MLA), list("Chicago", CITE_CHICAGO), list("BibTeX", CITE_BIBTEX), list("RIS", CITE_RIS)),
+                     function(f) tags$button(type = "button", class = "btn btn-default btn-sm fade-btn cite-btn", `data-cite` = f[[2]],
+                                             span(class = "fb-a", f[[1]]), span(class = "fb-b", `aria-live` = "polite")))),
+            div(class = "project-links",
+              tags$a(href = REPO_URL, target = "_blank", rel = "noopener", icon("code"), " Source code"),
+              tags$a(href = paste0(REPO_URL, "/issues"), target = "_blank", rel = "noopener", icon("bug"), " Report a problem"),
+              tags$a(href = paste0(REPO_URL, "/commits/main"), target = "_blank", rel = "noopener", icon("clock-rotate-left"), " Version history"),
+              tags$a(href = paste0(REPO_URL, "/blob/main/LICENSE"), target = "_blank", rel = "noopener", icon("scale-balanced"), " MIT license")),
             span(class = "app-meta", paste0("Version ", APP_VERSION, ", last updated ", LAST_UPDATED))),
           div(class = "author-card about-section", id = "about_author",
-            img(src = "headshot.jpg", alt = "Jackson Strand", class = "author-photo"),
-            div(class = "author-text",
-              div(class = "author-label", "About the author"),
-              h4("Jackson R. Strand"),
-              p("PhD student, Montana State University"),
-              p(class = "author-note",
-                "Jackson is an entomologist who studies insect ecology and biological control, with a background in chemical ecology and plant-insect interactions. He frequently works with Bayesian statistics and simulation in R, and he built PVEC to make probabilistic vectorial capacity forecasts accessible to anyone who wants to explore how parameter uncertainty shapes transmission risk."),
-              p(class = "author-link",
-                tags$a(href = "https://www.jackson-strand.com", target = "_blank",
-                       rel = "noopener", "www.jackson-strand.com"))))))
+            div(class = "author-head",
+              img(src = "headshot.jpg", alt = "Jackson Strand", class = "author-photo"),
+              div(class = "author-id",
+                div(class = "author-label", "About the author"),
+                h4("Jackson R. Strand"),
+                p(class = "author-role", "PhD student, Montana State University"))),
+            p(class = "author-note",
+                "Jackson is an entomologist who studies insect ecology and biological control, with a background in chemical ecology and plant-insect interactions. He built PVEC to make probabilistic vectorial capacity forecasts accessible to anyone who wants to explore how parameter uncertainty shapes transmission risk."),
+            p(class = "author-link",
+              tags$a(href = "https://www.jackson-strand.com", target = "_blank",
+                     rel = "noopener", "www.jackson-strand.com"))))))
       )
     )
   ),
@@ -1840,15 +1991,20 @@ server <- function(input, output, session) {
 
   output$corr_list <- renderUI({
     cp <- corr_pairs()
-    if (!nrow(cp)) return(helpText("No correlations set, so every assumption is drawn independently."))
+    if (!nrow(cp)) return(div(class = "corr-empty", icon("link-slash"), " No links set. Every assumption is drawn independently."))
     act <- active_ids(input$mort_model, input$structure)
-    tagList(lapply(seq_len(nrow(cp)), function(i) {
-      inuse <- cp$a[i] %in% act && cp$b[i] %in% act
-      div(class = paste("corr-row", if (!inuse) "inactive"),
-          sprintf("%s and %s: %+.2f", labels[[cp$a[i]]], labels[[cp$b[i]]], cp$rho[i]),
-          if (!inuse) " (not used with the current model or age structure)",
-          actionLink(paste0("corr_rm_", i), "remove"))
-    }))
+    tagList(
+      div(class = "corr-head", sprintf("%d link%s set", nrow(cp), if (nrow(cp) == 1) "" else "s")),
+      lapply(seq_len(nrow(cp)), function(i) {
+        inuse <- cp$a[i] %in% act && cp$b[i] %in% act
+        div(class = paste("corr-row", if (!inuse) "inactive"),
+            span(class = "corr-icon", icon("link")),
+            div(class = "corr-main",
+                div(class = "corr-pair", strong(labels[[cp$a[i]]]), span(class = "corr-arrow", "\u2194"), strong(labels[[cp$b[i]]])),
+                if (!inuse) div(class = "corr-note", "Not used with the current model or age structure")),
+            span(class = paste("corr-rho", if (cp$rho[i] < 0) "neg" else "pos"), title = "Rank correlation", sprintf("%+.2f", cp$rho[i])),
+            actionLink(paste0("corr_rm_", i), icon("xmark"), class = "corr-rm", title = "Remove this link", `aria-label` = "Remove this link"))
+      }))
   })
 
   # The share link needs the correlation list on the page
@@ -2013,25 +2169,26 @@ server <- function(input, output, session) {
   })
 
   # Start over: confirm, then restart the app from its defaults (clears runs, history and any link settings)
-  # Reset opens a pop-up with the two choices
+  # Reset opens a pop-up with the two choices. "Start over" asks for confirmation inside the same pop-up (pvec.js swaps the two panes),
+  # so there is no second dialog opening on top and no flash of the backdrop.
   observeEvent(input$reset_open, {
     showModal(modalDialog(
       title = "Reset", size = "s", easyClose = TRUE, footer = modalButton("Cancel"),
-      actionButton("reset_preset", tagList(div(class = "ro-title", "Reset values to this preset"),
-                                           div(class = "ro-desc", "Sets every assumption and the number of trials back to the preset's values.")),
-                   class = "reset-option"),
-      actionButton("start_over", tagList(div(class = "ro-title", "Start over"),
-                                         div(class = "ro-desc", "Restores all defaults and clears the run history.")),
-                   class = "reset-option")))
+      div(class = "reset-panes",
+        div(class = "reset-pane reset-choices",
+          actionButton("reset_preset", tagList(div(class = "ro-title", "Reset values to this preset"),
+                                               div(class = "ro-desc", "Sets every assumption and the number of trials back to the preset's values.")),
+                       class = "reset-option"),
+          actionButton("start_over", tagList(div(class = "ro-title", "Start over"),
+                                             div(class = "ro-desc", "Restores all defaults and clears the run history.")),
+                       class = "reset-option")),
+        div(class = "reset-pane reset-confirm",
+          p("This resets every setting to its default and clears your run history. Settings you have not saved or shared will be lost."),
+          div(class = "reset-confirm-actions",
+              actionButton("reset_back", "Back", class = "btn-default"),
+              actionButton("confirm_start_over", "Start over", class = "btn-primary"))))))
   })
 
-  observeEvent(input$start_over, {
-    showModal(modalDialog(
-      title = "Start over?", size = "s", easyClose = TRUE,
-      "This resets every setting to its default and clears your run history. Settings you have not saved or shared will be lost.",
-      footer = tagList(modalButton("Cancel"),
-                       actionButton("confirm_start_over", "Start over", class = "btn-primary"))))
-  })
   observeEvent(input$confirm_start_over, {
     removeModal()
     session$sendCustomMessage("startOver", list())
@@ -2385,8 +2542,17 @@ server <- function(input, output, session) {
   output$scenario_list <- renderUI({
     sc <- rev(scenarios())
     if (!length(sc)) return(div(class = "scen-empty", "No runs yet."))
-    newest <- sc[[1]]$id
+    newest <- sc[[1]]$id; newest_med <- sc[[1]]$med
     cs <- cur_snap()
+    # How an older run's median Ct compares with the latest run's (neutral colours: higher is not better or worse)
+    delta_chip <- function(x) {
+      if (x$id == newest || !isTRUE(is.finite(x$med)) || !isTRUE(is.finite(newest_med)) || isTRUE(newest_med == 0)) return(NULL)
+      d <- x$med - newest_med; pct <- 100 * d / newest_med
+      if (abs(pct) < 0.5) return(span(class = "scen-delta flat", title = "Median Ct is within 0.5% of the latest run", "\u2248 latest"))
+      span(class = paste("scen-delta", if (d > 0) "up" else "down"),
+           title = sprintf("Median Ct is %s (%.1f%%) %s than the latest run", fmt3(abs(d)), abs(pct), if (d > 0) "higher" else "lower"),
+           sprintf("%s %.1f%% vs latest", if (d > 0) "\u25b2" else "\u25bc", abs(pct)))
+    }
     same_as_now <- function(x) !is.null(cs) && !is.null(x$snap) && nrow(snap_diff(cs, x$snap)) == 0
     item <- function(x)
       tags$li(class = "scen-item", `data-id` = x$id, tabindex = 0, role = "button", title = "Click to reload this run's settings",
@@ -2398,10 +2564,11 @@ server <- function(input, output, session) {
                                                        title = "Compare this run with another", icon("table-columns")),
                        tags$button(type = "button", class = "scen-edit", `aria-label` = "Rename this run", title = "Rename", icon("pen")),
                        tags$button(type = "button", class = "scen-del", `aria-label` = "Remove this run from the list", title = "Remove from the list", icon("xmark")))),
-              if (x$id == newest || same_as_now(x))
+              if (x$id == newest || same_as_now(x) || !is.null(delta_chip(x)))
                 div(class = "scen-tags",
                     if (x$id == newest) span(class = "scen-tag showing", title = "The results on screen come from this run", "Showing"),
-                    if (same_as_now(x)) span(class = "scen-tag same", title = "The settings on screen match this run", "Current settings")),
+                    if (same_as_now(x)) span(class = "scen-tag same", title = "The settings on screen match this run", "Current settings"),
+                    delta_chip(x)),
               div(class = "scen-sub", sprintf("%s \u00b7 %s \u00b7 %s trials \u00b7 %s", tools::toTitleCase(x$model),
                                               if (identical(x$structure, "synchronous")) "synchronous" else "stable", format(x$n, big.mark = ","), x$time)),
               div(class = "scen-sub", sprintf("Median Ct %s (95%%: %s\u2013%s)", fmt3(x$med), fmt3(x$lo), fmt3(x$hi))))
@@ -2414,20 +2581,31 @@ server <- function(input, output, session) {
               div(class = "scen-rest-wrap", div(class = "scen-rest-in", tags$ul(class = "scen-list scen-rest", lapply(rest, item))))))
   })
 
-  # "Run N, model, structure, trials" line at the top of each results tab, with a warning when the settings have moved on
-  run_context_ui <- function() renderUI({
+  # "Run N, model, structure, trials" line, shown in the bar of each results tab's quick summary, with a warning when the settings have moved on
+  run_context_parts <- function() {
     res <- results()
     stale <- stale_flag()
-    div(class = "run-context no-print",
-        span(class = "rc-main", sprintf("Run %d \u00b7 %s mortality \u00b7 %s age structure \u00b7 %s trials \u00b7 seed %s%s",
-                                       res$run, tools::toTitleCase(res$model),
-                                       if (identical(res$structure, "synchronous")) "synchronous" else "stable",
-                                       format(res$n, big.mark = ","), res$seed,
-                                       if (!is.null(res$temp) && res$temp != 0) sprintf(" \u00b7 %+g \u00b0C", res$temp) else "")),
-        if (stale) span(class = "rc-stale", role = "status", "\u26a0 Settings changed since this run. ",
-                        tags$a(href = "#", class = "rc-rerun", "Re-run")))
+    tagList(
+      span(class = "rc-main", sprintf("Run %d \u00b7 %s mortality \u00b7 %s age structure \u00b7 %s trials \u00b7 seed %s%s",
+                                     res$run, tools::toTitleCase(res$model),
+                                     if (identical(res$structure, "synchronous")) "synchronous" else "stable",
+                                     format(res$n, big.mark = ","), res$seed,
+                                     if (!is.null(res$temp) && res$temp != 0) sprintf(" \u00b7 %+g \u00b0C", res$temp) else "")),
+      if (stale) span(class = "rc-stale", role = "status", "\u26a0 Settings changed since this run. ",
+                      tags$a(href = "#", class = "rc-rerun", "Re-run")))
+  }
+
+  # Median Ct of every run, oldest first, for the small trend line in the Past runs header
+  observe({
+    sc <- scenarios()
+    session$sendCustomMessage("runSeries", list(runs = lapply(sc, function(x) list(name = x$name, med = x$med))))
   })
-  for (tab in c("forecast", "sens", "draws", "surv")) output[[paste0("ctx_", tab)]] <- run_context_ui()
+
+  # The newest run's name (Run 3, or what you renamed it to) labels the effect bars on the assumption cards
+  observe({
+    sc <- scenarios()
+    session$sendCustomMessage("runName", list(name = if (length(sc)) sc[[length(sc)]]$name else ""))
+  })
 
   # Remove the drag box from a chart. This is done now and again once the charts have redrawn, because a redraw can bring the box back.
   clear_brushes <- function(ids) {
@@ -2472,11 +2650,13 @@ server <- function(input, output, session) {
   # ---- "What this says": a short plain-language reading of each results tab ----
   # The sentence is built as one HTML string, so no stray spaces appear before punctuation
   insight_box <- function(...) div(class = "insight no-print",
-    tags$button(type = "button", class = "insight-head", `aria-expanded` = "false",
-                span(class = "insight-icon", `aria-hidden` = "true", icon("lightbulb")),
-                span(class = "insight-title", "Quick summary"),
-                span(class = "insight-hint", `aria-hidden` = "true"),
-                span(class = "insight-chev", `aria-hidden` = "true")),
+    div(class = "insight-bar",
+      tags$button(type = "button", class = "insight-head", `aria-expanded` = "false",
+                  span(class = "insight-icon", `aria-hidden` = "true", icon("lightbulb")),
+                  span(class = "insight-title", "Quick summary"),
+                  span(class = "insight-hint", `aria-hidden` = "true"),
+                  span(class = "insight-chev", `aria-hidden` = "true")),
+      div(class = "run-context insight-ctx", run_context_parts())),
     div(class = "insight-body",
         div(class = "insight-body-in",
             p(HTML(paste0(..., collapse = ""))),
@@ -2780,6 +2960,10 @@ server <- function(input, output, session) {
             div(class = "table-tools", copy_btn("compare_table")))
   })
 
+  output$forecast_frame <- renderPlot({
+    res <- results()
+    as_frame(draw_forecast(res$ct, cert_bounds(), NULL, NULL, input$thresh, bins = if (is.null(input$bins)) 50 else input$bins))
+  })
   output$forecast_plot <- renderPlot({
     res <- results()
     draw_forecast(res$ct, cert_bounds(), NULL, NULL, input$thresh,
@@ -2880,6 +3064,7 @@ server <- function(input, output, session) {
       var     = "Share of variance: the part of the spread in Ct that one assumption explains by itself (its main effect). Shares add up to less than 100% when assumptions act together."))
   })
 
+  output$sens_frame <- renderPlot(as_frame(draw_sens(results(), input$sens_metric, sens_res())))
   output$sens_plot <- renderPlot(draw_sens(results(), input$sens_metric, sens_res()), alt = reactive({
     sc <- sens_res(); m <- input$sens_metric
     if (is.null(sc)) "No assumptions vary, so there is nothing to rank."
@@ -2936,7 +3121,7 @@ server <- function(input, output, session) {
         var = list(div(sprintf("%.1f%% of the variance, alone", val))),
         list(div(sprintf("%+.1f%% of squared rank correlation", val))))
       yc <- 0.7 + 1.2 * (i - 1)                            # horizontal bars are centred at 0.7, 1.9, 3.1, ... and 1 high
-      list(x0 = min(0, val), x1 = max(0, val), y0 = yc - 0.5, y1 = yc + 0.5,
+      list(id = id, x0 = min(0, val), x1 = max(0, val), y0 = yc - 0.5, y1 = yc + 0.5,
            tip = tip_html(strong(labels[[id]]), lines, div(class = "tip-hint", "Click to see its drawn values")))
     })
     session$sendCustomMessage("hoverBars", list(chart = "sens_plot", bars = bars))
@@ -2977,6 +3162,14 @@ server <- function(input, output, session) {
       else sprintf("Histogram of the drawn values of %s. Median %s; 95%% of draws between %s and %s. Click to enlarge.",
                    labels[[id]], fmt3(median(x)), fmt3(quantile(x, 0.025)), fmt3(quantile(x, 0.975)))
     }))
+  })
+
+  # Each assumption card shows a thin "effect on Ct" bar from the last run's PRCC (0 for fixed assumptions)
+  observe({
+    sc <- sens_res()
+    eff <- setNames(as.list(rep(0, length(setting_ids))), setting_ids)
+    if (!is.null(sc)) for (i in seq_along(sc$prcc$id)) if (sc$prcc$id[i] %in% setting_ids && is.finite(sc$prcc$est[i])) eff[[sc$prcc$id[i]]] <- abs(sc$prcc$est[i])
+    session$sendCustomMessage("cardEffects", eff)
   })
 
   output$draws_grid <- renderUI({
@@ -3083,6 +3276,9 @@ server <- function(input, output, session) {
   })
 
   surv_args <- function(view) draw_surv(results(), view, surv_lts(), k = as.integer(input$surv_n), xmax = input$surv_age, hl = surv_hl())
+  surv_frame_args <- function(view) as_frame(draw_surv(results(), view, surv_lts(), k = as.integer(input$surv_n), xmax = input$surv_age, hl = NULL))
+  output$surv_frame_s <- renderPlot(surv_frame_args("surv"))
+  output$surv_frame_h <- renderPlot(surv_frame_args("hazard"))
   output$surv_plot_s <- renderPlot(surv_args("surv"),
     alt = "Survivorship curves for the first trials, one line per trial. Hover a line to see that trial's values. Drag across the chart to zoom the age axis.")
   surv_life <- reactive(lifespans(results()))

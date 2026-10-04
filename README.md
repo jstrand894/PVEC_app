@@ -20,6 +20,15 @@ The app runs entirely in your browser (R compiled to WebAssembly through
 [Shinylive](https://posit-dev.github.io/r-shinylive/)). There is no server, and nothing you
 enter leaves your computer. The first load can take 10 to 30 seconds while R starts.
 
+## What's new in version 1.2
+
+- **Charts draw in.** After a run, and each time you open a results tab, bars rise, lines sweep across and the axes stay put.
+- **Results wait for the Run bar.** A loading skeleton covers the results until the bar finishes, including when the page first opens.
+- **Last run effect on Ct.** Each assumption card shows how strongly it moved Ct in your most recent run, labelled with the run's name, and fades when you edit it.
+- **Past runs at a glance.** Each earlier run shows how its median compares with the latest, and a small line tracks the median across runs.
+- **Cleaner results tabs.** The run details share the Quick summary bar, Download sits in the chart corner, "How to read this chart" moves below the chart, and hovering a bar fills a fixed box instead of covering the chart.
+- **New on the About tab.** Animations (a cohort ageing, two ways to age a population, the incubation race), definitions that pop up on the equation symbols, a short FAQ, small distribution pictures in the Presets table, and more ways to copy the citation (APA, MLA, Chicago, BibTeX, RIS).
+
 ## What you can do
 
 **Set up a run**

@@ -1,3 +1,21 @@
+// ---- Results gate: nothing from a run shows (a skeleton is shown instead) until the Run button's bar has finished, on the first
+// load as well. PV_GATE.after(fn) runs fn straight away, or once the gate opens; the draw-in animations and number count-ups use it
+// so they happen in view, after the reveal, not underneath the skeleton.
+window.PV_GATE = (function () {
+  var q = [], g = {on: true};
+  document.body.classList.add('pv-gated');
+  g.after = function (fn) { if (!g.on) fn(); else q.push(fn); };
+  g.set = function (on) {
+    if (on === g.on) return;
+    g.on = on; document.body.classList.toggle('pv-gated', on);
+    if (!on) {
+      var f = q.splice(0);
+      requestAnimationFrame(function () { requestAnimationFrame(function () { f.forEach(function (fn) { try { fn(); } catch (e) {} }); }); });
+    }
+  };
+  return g;
+})();
+
 
     $(function() {
       var dock = $('.run-dock').first();
@@ -71,13 +89,19 @@
         b.removeClass('running').prop('disabled', false); setRunLabel('Run simulation', false);
         if (b[0]) b[0].style.removeProperty('--p');
         if (window.syncRunStale) window.syncRunStale();
+        PV_GATE.set(false);
       }
-      $(document).on('click', '#run', function() {
+      function startRunUI() {
         if (run) return;
+        PV_GATE.set(true);
         run = {t0: performance.now(), done: false};
         // Wait a tick so Shiny registers the click before the button is disabled
         setTimeout(function() { $('#run').addClass('running').prop('disabled', true); setRun(0); run.timer = setInterval(stepRun, 30); }, 0);
-      });
+      }
+      $(document).on('click', '#run', startRunUI);
+      // The app runs once by itself when the page opens, so the same bar (and skeleton) covers that first run
+      startRunUI();
+      setTimeout(function() { if (!run) PV_GATE.set(false); }, 15000);      // safety: never leave the results hidden if no run was under way
       $(document).on('shiny:idle', function() {
         if (run) run.done = true;
         else if (window.syncRunStale) window.syncRunStale();
@@ -129,7 +153,7 @@
       // Save all the draws tiles as one image, three to a row
       $(document).on('click', '.dl-grid', function(e) {
         e.preventDefault();
-        var imgs = $('#' + $(this).data('target') + ' .draw-tile:visible img, #' + $(this).data('target') + ' .combine-img:visible img').toArray();
+        var imgs = $('#' + $(this).data('target') + ' .draw-tile:visible img, #' + $(this).data('target') + ' .combine-img:visible > .shiny-plot-output img').toArray();
         var name = $(this).data('file') || 'plots.png';
         if (!imgs.length) return;
         var cols = Math.min($(this).data('target') === 'surv_wrap' ? 2 : 3, imgs.length), w = imgs[0].naturalWidth, h = imgs[0].naturalHeight;
@@ -528,13 +552,27 @@
       function spy() {
         spyQueued = false;
         var sc = pageScroller(), base = sc ? sc.getBoundingClientRect().top : 0, active = null;
-        var secs = $('.assump-section:visible, .about-section:visible');
-        secs.each(function() {
-          if (active === null || this.getBoundingClientRect().top - base <= 70) active = this.id;
+        // only sections that have a chip count (the author card, for one, has none)
+        var secs = $('.assump-section:visible, .about-section:visible').filter(function() { return $('.jump-chip[data-target="' + this.id + '"]').length > 0; });
+        // The section with the most of itself on screen wins (below the jump bar), so one that has mostly scrolled past stops counting
+        var viewTop = base + 50, viewBottom = base + (sc ? sc.clientHeight : window.innerHeight), best = -1, bestIdx = 0, refIdx = 0, ids = [];
+        var pos = sc ? sc.scrollTop : window.scrollY;
+        var remaining = (sc ? sc.scrollHeight - sc.clientHeight : document.documentElement.scrollHeight - window.innerHeight) - pos;
+        var viewH = viewBottom - viewTop;
+        // In the last screenful the page runs out of room, so short sections near the end could never win on area and would be skipped.
+        // There, a reference line slides from the top of the view to the bottom as the end is reached, and every section gets its turn in order.
+        var refY = remaining < viewH ? viewTop + (1 - remaining / viewH) * viewH : -Infinity;
+        secs.each(function(i) {
+          var r = this.getBoundingClientRect(), shown = Math.min(r.bottom, viewBottom) - Math.max(r.top, viewTop);
+          ids.push(this.id);
+          if (shown > best) { best = shown; bestIdx = i; }
+          if (r.top <= refY) refIdx = i;
         });
+        if (ids.length) active = ids[Math.max(bestIdx, refIdx)];
         var atBottom = sc ? (sc.scrollTop + sc.clientHeight >= sc.scrollHeight - 2)
                           : (window.scrollY + window.innerHeight >= document.documentElement.scrollHeight - 2);
         if (atBottom && secs.length && sc && sc.scrollTop > 0) active = secs.last().attr('id');
+        if (secs.length && (sc ? sc.scrollTop : window.scrollY) <= 2) active = secs.first().attr('id');   // at the very top the first section wins, however short it is
         if (forcedChip && Date.now() < forcedUntil && $('#' + forcedChip).is(':visible')) active = forcedChip;
         $('.jump-chip').removeClass('active').filter('[data-target="' + active + '"]').addClass('active');
       }
@@ -605,12 +643,18 @@
 
       // When the results are out of date the server shows a note; mirror that on the Run button
       // When the results are out of date the button keeps its blue, changes its label and glows amber around the edge
+      // When the results go out of date the button crossfades to amber, the word "new" slides in, and one soft amber ring pulses outward.
       function syncRunStale() {
         var stale = $('#stale_note .stale-note').length > 0, b = $('#run');
         if (!b.length) return;
         $('body').toggleClass('results-stale', stale);   // also lights the dots beside the result tabs amber
+        var was = b.hasClass('stale'), running = b.hasClass('running');
         b.toggleClass('stale', stale);
-        if (!b.hasClass('running')) setRunLabel(stale ? 'Run new simulation' : 'Run simulation');
+        if (!running) setRunLabel(stale ? 'Run new simulation' : 'Run simulation');
+        if (stale && !was && !running && !PV_GATE.on && !window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
+          b.removeClass('ping'); void b[0].offsetWidth; b.addClass('ping');
+          setTimeout(function () { b.removeClass('ping'); }, 1000);
+        }
       }
       window.syncRunStale = syncRunStale;
       // When the "Settings changed" note is removed, keep a copy that shrinks and fades instead of vanishing
@@ -792,7 +836,7 @@
 // found, and a highlight and tooltip are drawn over the picture, so they follow the mouse at once with no round trip to the server.
 (function () {
   var bars = {}, maps = {};
-  Shiny.addCustomMessageHandler('hoverBars', function (m) { bars[m.chart] = m.bars || []; $('.tip-cell').each(function () { hide(this); }); });
+  Shiny.addCustomMessageHandler('hoverBars', function (m) { bars[m.chart] = m.bars || []; $('.tip-cell').each(function () { hide(this); }); $(document).trigger('pv:bars', [m]); });
   $(document).on('shiny:value', function (e) {
     if (e.name === 'forecast_plot' || e.name === 'sens_plot') maps[e.name] = e.value && e.value.coordmap;
   });
@@ -802,12 +846,34 @@
     if (!tip) { tip = document.createElement('div'); tip.className = 'surv-tip js-tip'; cell.appendChild(tip); }
     return {hl: hl, tip: tip};
   }
+  function linkTile(id) { $('.driver-tile').each(function () { $(this).toggleClass('linked', id != null && $(this).data('id') === id); }); }
+  // A driver tile above the sensitivity chart lights up its bar, and (in mousemove below) a bar lights up its tile
+  window.pvBarHl = function (chart, id) {
+    var out = document.getElementById(chart), cell = out && out.closest('.tip-cell'), img = out && out.querySelector('img'); if (!cell) return;
+    var list = bars[chart], map = maps[chart], panel = map && map.panels && map.panels[0], hit = null, i;
+    if (id != null && list) for (i = 0; i < list.length; i++) if (list[i].id === id) { hit = list[i]; break; }
+    if (!hit || !img || !panel) { var h0 = cell.querySelector('.bar-hl'), t0 = cell.querySelector('.js-tip'); if (h0) h0.classList.remove('on'); if (t0) t0.style.display = 'none'; cell.classList.remove('hl-linked'); return; }
+    var r0 = cell.getBoundingClientRect(), ir = img.getBoundingClientRect(), d = panel.domain, g = panel.range, sx = map.dims.width / ir.width, sy = map.dims.height / ir.height;
+    function cx(v) { return (g.left + (v - d.left) / (d.right - d.left) * (g.right - g.left)) / sx + ir.left - r0.left; }
+    function cy(v) { return (g.bottom - (v - d.bottom) / (d.top - d.bottom) * (g.bottom - g.top)) / sy + ir.top - r0.top; }
+    var p = parts(cell);
+    p.hl.style.left = cx(hit.x0) + 'px'; p.hl.style.width = (cx(hit.x1) - cx(hit.x0)) + 'px';
+    p.hl.style.top = cy(hit.y1) + 'px'; p.hl.style.height = (cy(hit.y0) - cy(hit.y1)) + 'px';
+    p.hl.classList.add('on'); cell.classList.add('hl-linked');
+    cell.setAttribute('data-chart', chart);
+    if (p.tip.dataset.html !== hit.tip) { p.tip.innerHTML = hit.tip; p.tip.dataset.html = hit.tip; }
+    p.tip.style.display = 'block';
+  };
+  $(document).on('mouseenter focusin', '.driver-tile', function () { window.pvBarHl('sens_plot', $(this).data('id')); });
+  $(document).on('mouseleave focusout', '.driver-tile', function () { window.pvBarHl('sens_plot', null); });
   function hide(cell) {
+    linkTile(null);
     var hl = cell.querySelector('.bar-hl'), tip = cell.querySelector('.js-tip');
     if (hl) hl.classList.remove('on'); if (tip) tip.style.display = 'none';
   }
   $(document).on('mousemove', '.tip-cell', function (e) {
     var cell = this, out = cell.querySelector('.shiny-plot-output'), img = out && out.querySelector('img');
+    if (out && cell.getAttribute('data-chart') !== out.id) cell.setAttribute('data-chart', out.id);
     var r0 = cell.getBoundingClientRect(), x = e.clientX - r0.left;
     cell.style.setProperty('--tx', x + 'px'); cell.style.setProperty('--ty', (e.clientY - r0.top) + 'px');
     cell.classList.toggle('tip-flip', x > r0.width / 2);
@@ -825,7 +891,7 @@
     var p = parts(cell);
     p.hl.style.left = cx(hit.x0) + 'px'; p.hl.style.width = (cx(hit.x1) - cx(hit.x0)) + 'px';
     p.hl.style.top = cy(hit.y1) + 'px'; p.hl.style.height = (cy(hit.y0) - cy(hit.y1)) + 'px';
-    p.hl.classList.add('on');
+    p.hl.classList.add('on'); linkTile(hit.id);
     if (p.tip.dataset.html !== hit.tip) { p.tip.innerHTML = hit.tip; p.tip.dataset.html = hit.tip; }
     p.tip.style.display = 'block';
   });
@@ -1471,3 +1537,781 @@ $(document).on('click', '.scen-dlall', function () { Shiny.setInputValue('scenar
     queue();
   });
 })();
+
+
+// Jump chips: the blue "active" fill is goo behind the translucent chips. When the active chip changes, a drop pulls out of the old chip,
+// thins into a strand along the way, and swells into the new chip. Three shapes do it (the old chip's blue shrinking away, a thin strand,
+// and the new chip's blue growing), and an SVG "goo" filter (blur, then sharpen the edge) fuses them into one stretchy shape.
+(function () {
+  var reduce = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  var USE_BLOB = false;   // set to true to bring the oozing blob back; while false each chip just fades its blue on and off
+  var D = 640, EASE = 'cubic-bezier(.45,0,.25,1)';
+  function px(r) { return {left: r.left + 'px', top: r.top + 'px', width: r.w + 'px', height: r.h + 'px'}; }
+  function dot(r, k) {                       // a small round drop at the centre of r, k times the chip height
+    var d = r.h * k; return px({left: r.left + r.w / 2 - d / 2, top: r.top + r.h / 2 - d / 2, w: d, h: d});
+  }
+  function setup(bar) {
+    if (!USE_BLOB) return;
+    var goo = document.createElement('div'); goo.className = 'jump-goo'; goo.setAttribute('aria-hidden', 'true');
+    var head = document.createElement('span'), tail = document.createElement('span'), strand = document.createElement('span');
+    head.className = 'jb-head';
+    goo.appendChild(tail); goo.appendChild(strand); goo.appendChild(head);
+    bar.insertBefore(goo, bar.firstChild); bar.classList.add('has-blob');
+    var last = null, anims = [];
+    function rectOf(chip) { return {left: chip.offsetLeft, top: chip.offsetTop, w: chip.offsetWidth, h: chip.offsetHeight}; }
+    function setStatic(r) { var s = px(r); for (var k in s) head.style[k] = s[k]; }
+    function ooze(A, B) {
+      anims.forEach(function (x) { x.cancel(); }); anims = [];
+      var ax = A.left + A.w / 2, bx = B.left + B.w / 2, ay = A.top + A.h / 2, by = B.top + B.h / 2;
+      var sh = Math.min(A.h, B.h) * .42, o = {duration: D, easing: EASE};
+      var lo = Math.min(ax, bx), span = Math.abs(bx - ax);
+      // the old chip's blue: full chip, then a drop, then gone
+      anims.push(tail.animate([Object.assign(px(A)), Object.assign(dot(A, .55), {offset: .4}), Object.assign(dot(A, 0))], o));
+      // the strand: grows out of the old chip to the new one, then is drawn into the new chip
+      anims.push(strand.animate([
+        {left: ax + 'px', top: ay - sh / 2 + 'px', width: '0px', height: sh + 'px'},
+        {left: lo + 'px', top: (ay + by) / 2 - sh / 2 + 'px', width: span + 'px', height: sh + 'px', offset: .45},
+        {left: bx + 'px', top: by - sh / 2 + 'px', width: '0px', height: sh + 'px'}], o));
+      // the new chip's blue: a drop that travels over, then swells to fill the chip
+      anims.push(head.animate([dot(A, .5), Object.assign(dot(B, .5), {offset: .45}), px(B)], o));
+    }
+    function place() {
+      var chip = bar.querySelector('.jump-chip.active');
+      if (!chip || !bar.offsetParent || !chip.offsetWidth) { head.classList.remove('on'); last = null; return; }
+      var r = rectOf(chip);
+      if (last && !reduce && head.animate && (Math.abs(last.left - r.left) > 1 || Math.abs(last.top - r.top) > 1)) ooze(last, r);
+      else if (last && !reduce) { /* same chip, only its size changed */ }
+      setStatic(r); head.classList.add('on'); last = r;
+    }
+    var queued = false;
+    function queue() { if (!queued) { queued = true; requestAnimationFrame(function () { queued = false; place(); }); } }
+    new MutationObserver(queue).observe(bar, {attributes: true, attributeFilter: ['class'], subtree: true});
+    function snap() { anims.forEach(function (x) { x.cancel(); }); anims = []; last = null; queue(); }
+    if (window.ResizeObserver) {
+      var ro = new ResizeObserver(snap);     // a resize or a chip's count text changing moves the chips: snap to the new spot, no ooze
+      ro.observe(bar); bar.querySelectorAll('.jump-chip').forEach(function (c) { ro.observe(c); });
+    }
+    window.addEventListener('resize', snap);
+    queue();
+  }
+  $(function () {
+    if (!USE_BLOB) return;
+    // One shared SVG filter: blur the shapes together, then raise the contrast of the edge so the blur becomes a smooth, joined outline
+    $('body').append('<svg width="0" height="0" style="position:absolute" aria-hidden="true" focusable="false"><defs>' +
+      '<filter id="jump-goo" x="-10%" y="-60%" width="120%" height="220%" color-interpolation-filters="sRGB">' +
+      '<feGaussianBlur in="SourceGraphic" stdDeviation="3.2" result="b"/>' +
+      '<feColorMatrix in="b" mode="matrix" values="1 0 0 0 0  0 1 0 0 0  0 0 1 0 0  0 0 0 22 -9"/></filter></defs></svg>');
+    $('.jump-bar').each(function () { setup(this); });
+  });
+})();
+
+
+// ---- Polish: sliding tab marker, count-up numbers, plot wipe, card preview fade, card effect bars ----
+(function () {
+  var reduce = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  var loadedAt = Date.now();
+
+  // A marker on the top edge of the active main tab
+  $(function () {
+    var nav = document.getElementById('tabs'); if (!nav) return;
+    var bar = document.createElement('div'); bar.className = 'tab-underline'; bar.setAttribute('aria-hidden', 'true'); nav.appendChild(bar);
+    function place(animate, li) {
+      li = li || nav.querySelector('li.active'); if (!li) return;
+      if (!animate) bar.style.transition = 'none';
+      // sized to the tab's own face (not the slot around it) and pulled in from the rounded corners
+      var a = li.querySelector('a'), face = a ? a.offsetWidth : li.offsetWidth, inset = Math.min(10, face * 0.12);
+      bar.style.left = (li.offsetLeft + inset) + 'px'; bar.style.width = Math.max(8, face - 2 * inset) + 'px'; bar.style.top = li.offsetTop + 'px';
+      bar.classList.add('on');
+      if (!animate) { void bar.offsetWidth; bar.style.transition = ''; }
+    }
+    // The marker sits on the active tab (no sliding). On a tab change it is put in place hidden and fades in with the tab's own face,
+    // so it does not pop in ahead of the tab.
+    $(document).on('show.bs.tab', '#tabs a[data-toggle="tab"]', function (e) {
+      bar.style.transition = 'none'; bar.style.opacity = '0';
+      place(false, e.target.parentNode);
+      void bar.offsetWidth; bar.style.transition = ''; bar.style.opacity = '';
+    });
+    window.addEventListener('resize', function () { place(false); });
+    if (window.ResizeObserver) new ResizeObserver(function () { place(false); }).observe(nav);
+    if (document.fonts && document.fonts.ready) document.fonts.ready.then(function () { place(false); });
+    setTimeout(function () { place(false); }, 300);
+    place(false);
+  });
+
+  // Tile numbers tick from the previous value to the new one when a tile is redrawn with a different number
+  var seen = {}, tok = /[-+]?\d[\d,]*(?:\.\d+)?/g;
+  function tileKey(el) {
+    var out = el.closest('.shiny-html-output'), tile = el.closest('.stat-tile');
+    var lab = tile && tile.querySelector('.tile-label'), nm = tile && tile.querySelector('.tile-name');
+    return (out ? out.id : '') + '|' + (lab ? lab.textContent : '') + '|' + (nm ? nm.textContent : '');
+  }
+  function fmtNum(v, like) {
+    var m = like.match(/\.(\d+)/), d = m ? m[1].length : 0, body = Math.abs(v).toFixed(d);
+    if (like.indexOf(',') >= 0) body = Math.abs(v).toLocaleString('en-US', {minimumFractionDigits: d, maximumFractionDigits: d});
+    var sign = like.charAt(0) === '+' ? (v < 0 ? '-' : '+') : (v < 0 ? '-' : '');
+    return sign + body;
+  }
+  function countUp(el, oldText, newText) {
+    var a = oldText.match(tok), b = newText.match(tok);
+    if (!a || !b || a.length !== b.length) return;
+    var from = a.map(function (t) { return parseFloat(t.replace(/,/g, '')); }), to = b.map(function (t) { return parseFloat(t.replace(/,/g, '')); });
+    var t0 = null, dur = 700;
+    function frame(ts) {
+      if (!el.isConnected) return;
+      if (t0 === null) t0 = ts;
+      var p = Math.min(1, (ts - t0) / dur), e = 1 - Math.pow(1 - p, 3), i = 0;
+      el.textContent = p >= 1 ? newText : newText.replace(tok, function (t) { var k = i++; return fmtNum(from[k] + (to[k] - from[k]) * e, t); });
+      if (p < 1) requestAnimationFrame(frame);
+    }
+    requestAnimationFrame(frame);
+  }
+  function handleTile(el) {
+    if (el.__cu || el.children.length) return;
+    el.__cu = true;
+    var k = tileKey(el), txt = el.textContent, old = seen[k];
+    seen[k] = txt;
+    if (!reduce && old != null && old !== txt) PV_GATE.after(function () { countUp(el, old, txt); });
+  }
+  $(function () {
+    new MutationObserver(function (muts) {
+      muts.forEach(function (m) {
+        Array.prototype.forEach.call(m.addedNodes, function (n) {
+          if (n.nodeType !== 1) return;
+          if (n.classList.contains('tile-value')) handleTile(n);
+          else Array.prototype.forEach.call(n.querySelectorAll('.tile-value'), handleTile);
+        });
+      });
+    }).observe(document.body, {childList: true, subtree: true});
+    $('.tile-value').each(function () { handleTile(this); });
+  });
+
+  // After Run, the result charts are revealed left to right
+  var WIPE = {}, wipeUntil = 0, wiped = {};   // (only the data of the forecast, sensitivity and survival charts animate; see the bar-chart block below)
+  $(document).on('shiny:inputchanged', function (e) { if (e.name === 'run') { wipeUntil = Date.now() + 20000; wiped = {}; } });
+  $(document).on('shiny:value', function (e) {
+    var name = e.name;
+    if (reduce) return;
+    if (WIPE[name] && Date.now() < wipeUntil && !wiped[name]) {
+      wiped[name] = true;
+      setTimeout(function () {
+        var el = document.getElementById(name); if (!el || !el.animate) return;
+        el.animate([{clipPath: 'inset(0 100% 0 0)'}, {clipPath: 'inset(0 0 0 0)'}], {duration: 900, easing: 'cubic-bezier(.3,0,.2,1)'});
+      }, 120);
+    }
+    // A card's distribution preview crossfades when you change its settings (not on the first load): a copy of the old picture is left on
+    // top and fades away while the new one is already underneath, so it never dips. The copy lives in the card, not in the plot output,
+    // because Shiny writes new pictures into every <img> it finds inside the output.
+    if (/_prev$/.test(name) && Date.now() - loadedAt > 2500) {
+      var el = document.getElementById(name), old = el && el.querySelector('img'), card = el && el.closest('.assump-card');
+      if (!old || !card || !old.complete || !old.naturalWidth) return;
+      var cr = card.getBoundingClientRect(), ir = old.getBoundingClientRect();
+      if (el.__ghost) el.__ghost.remove();
+      var ghost = document.createElement('img'); ghost.src = old.src; ghost.setAttribute('aria-hidden', 'true'); ghost.className = 'prev-ghost';
+      ghost.style.cssText = 'position:absolute;pointer-events:none;opacity:1;transition:opacity .28s ease-out;z-index:2;left:' + (ir.left - cr.left - card.clientLeft) + 'px;top:' +
+                            (ir.top - cr.top - card.clientTop) + 'px;width:' + ir.width + 'px;height:' + ir.height + 'px';
+      card.appendChild(ghost); el.__ghost = ghost;
+      var before = old.src, tries = 0;
+      function done() { ghost.remove(); if (el.__ghost === ghost) el.__ghost = null; }
+      (function wait() {
+        var img = el.querySelector('img');
+        if (img && img.complete && (img.src !== before || tries >= 4)) { requestAnimationFrame(function () { ghost.style.opacity = '0'; }); setTimeout(done, 400); }
+        else if (++tries < 30) setTimeout(wait, 30); else done();
+      })();
+    }
+  });
+
+  // The effect-bar label names the newest run ("Run 3 effect on Ct", or whatever you renamed it to). When the name changes, the old text
+  // fades out, the label eases to the new text's width, and the new text fades in, so the bar beside it slides smoothly instead of jumping.
+  var runName = 'Last run';
+  function effectText() { return runName + ' effect on Ct'; }
+  function setEffectLabels(animate) {
+    var text = effectText();
+    document.querySelectorAll('.ce-label').forEach(function (l) {
+      l.closest('.card-effect').setAttribute('data-run', runName);
+      if (l.textContent === text) return;
+      if (!animate || reduce || !l.animate || !l.textContent || !l.offsetWidth) { l.textContent = text; return; }
+      var w0 = l.getBoundingClientRect().width;
+      l.getAnimations().forEach(function (a) { a.cancel(); });
+      var out = l.animate([{opacity: 1}, {opacity: 0}], {duration: 140, easing: 'ease-in', fill: 'forwards'});
+      out.onfinish = function () {
+        l.textContent = text; l.style.width = ''; var w1 = l.getBoundingClientRect().width;
+        out.cancel();
+        l.animate([{opacity: 0, width: w0 + 'px'}, {opacity: 1, width: w1 + 'px'}], {duration: 240, easing: 'ease-out'});
+      };
+    });
+  }
+  $(function () {
+    if (!window.Shiny) return;
+    Shiny.addCustomMessageHandler('runName', function (m) {
+      var name = (m && m.name) || 'Last run', first = runName === 'Last run';
+      if (name === runName) return;
+      runName = name;
+      // a new run's name arrives with its results: wait for the reveal. A rename is immediate.
+      PV_GATE.after(function () { setEffectLabels(!first); });
+    });
+  });
+
+  // A thin "effect on Ct" bar in each assumption card (the size of its partial rank correlation in the last run)
+  $(function () {
+    if (!window.Shiny) return;
+    Shiny.addCustomMessageHandler('cardEffects', function (eff) {
+      PV_GATE.after(function () { Object.keys(eff || {}).forEach(function (id) {
+        var card = document.getElementById('card_' + id); if (!card) return;
+        var row = card.querySelector('.card-effect');
+        if (!row) {
+          row = document.createElement('div'); row.className = 'card-effect';
+          row.innerHTML = '<span class="ce-label"></span><span class="ce-track"><i></i></span>';
+          var anchor = document.getElementById(id + '_prev') || card.querySelector('.assump-summary');
+          if (anchor && anchor.parentNode) anchor.parentNode.insertBefore(row, anchor.nextSibling); else return;
+        }
+        var v = Number(eff[id]) || 0;
+        row.querySelector('.ce-label').textContent = effectText(); row.setAttribute('data-run', runName);
+        row.title = (v > 0 ? 'How strongly this assumption moved Ct in ' + runName + ', the most recent run (partial rank correlation ' + v.toFixed(2) + '). ' : 'This assumption was fixed in ' + runName + ', the most recent run, so it did not move Ct. ') +
+                    'It is not recalculated as you edit: if you change this assumption the bar fades until you run again.';
+        row.classList.toggle('none', v <= 0);
+        var bar = row.querySelector('i'), t = Math.max(0, Math.min(1, v)), dark = document.documentElement.getAttribute('data-theme') === 'dark';
+        bar.style.width = (t * 100) + '%';
+        // the fuller the bar, the deeper (light theme) or brighter (dark theme) and more saturated its blue, so strong effects stand out
+        bar.style.background = 'hsl(212,' + Math.round(42 + 48 * t) + '%,' + Math.round(dark ? 38 + 34 * t : 80 - 54 * t) + '%)';
+      }); });
+    });
+  });
+})();
+
+
+// Only one of the About animations plays at a time: starting one pauses the others (they stay where they are and can be resumed)
+window.pvDemos = [];
+window.pvPauseOthers = function (root) { window.pvDemos.forEach(function (d) { if (d.root !== root) d.pause(); }); };
+
+// Run a callback once an element fills the majority of the scrolling view (like the jump chips, which switch when a section does), so
+// animations on a long page start when you have actually scrolled to them, not when their edge first peeks in.
+window.pvWhenInView = function (el, cb) {
+  var done = false, queued = false;
+  function scroller() { return window.innerWidth >= 768 ? document.querySelector('.tab-content') : null; }
+  function check() {
+    queued = false;
+    if (done || !el.offsetParent) return;
+    var sc = scroller(), base = sc ? sc.getBoundingClientRect().top : 0, top = base + 50, bottom = base + (sc ? sc.clientHeight : window.innerHeight);
+    var r = el.getBoundingClientRect(), vis = Math.min(r.bottom, bottom) - Math.max(r.top, top);
+    if (vis >= 0.5 * (bottom - top) || vis >= 0.9 * r.height) { done = true; document.removeEventListener('scroll', q, true); cb(); }
+  }
+  function q() { if (!queued && !done) { queued = true; requestAnimationFrame(check); } }
+  document.addEventListener('scroll', q, true); window.addEventListener('resize', q); $(document).on('shown.bs.tab', q); setTimeout(check, 500);
+};
+
+
+// ---- Cohort animation (About tab): 240 dots die off under the chosen mortality model, with the survivorship curve beside them ----
+(function () {
+  $(function () {
+    var root = document.getElementById('cohort'); if (!root) return;
+    var lx = {}; try { lx = JSON.parse(root.getAttribute('data-lx')); } catch (e) { return; }
+    var cv = root.querySelector('canvas'), ctx = cv.getContext('2d'), playBtn = root.querySelector('.cohort-play'),
+        scrub = root.querySelector('.cohort-scrub'), read = root.querySelector('.cohort-read');
+    var reduce = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    var COLS = 24, ROWS = 10, N = COLS * ROWS, SECS = 11;
+    var model = 'logistic', curve, maxDay, death, t = 0, playing = false, last = 0, started = false, raf = 0, W = 0, H = 0, dpr = 1;
+
+    function rng(seed) { return function () { seed |= 0; seed = seed + 0x6D2B79F5 | 0; var x = Math.imul(seed ^ seed >>> 15, 1 | seed); x = x + Math.imul(x ^ x >>> 7, 61 | x) ^ x; return ((x ^ x >>> 14) >>> 0) / 4294967296; }; }
+    function surv(tt) { var i = Math.min(curve.length - 1, Math.floor(tt)), j = Math.min(curve.length - 1, i + 1), f = tt - i; return curve[i] + (curve[j] - curve[i]) * f; }
+    function timeFor(v) {                         // the time at which the share alive falls to v
+      for (var i = 0; i < curve.length - 1; i++) if (curve[i] >= v && curve[i + 1] < v) return i + (curve[i] - v) / Math.max(1e-9, curve[i] - curve[i + 1]);
+      return Infinity;
+    }
+    function build(m) {
+      model = m; curve = lx[m]; maxDay = curve.length - 1;
+      for (var i = curve.length - 1; i > 0; i--) if (curve[i] >= 0.01) { maxDay = Math.min(curve.length - 1, i + 2); break; }
+      var order = []; for (var k = 0; k < N; k++) order.push(k);
+      var r = rng(12345); for (k = N - 1; k > 0; k--) { var j = Math.floor(r() * (k + 1)), tmp = order[k]; order[k] = order[j]; order[j] = tmp; }
+      death = new Array(N);
+      for (k = 0; k < N; k++) death[order[k]] = timeFor((N - k - 0.5) / N);   // the k-th mosquito to die takes a random place in the grid
+      t = 0; scrub.value = 0;
+    }
+    function median() { var d = timeFor(0.5); return isFinite(d) ? d : null; }
+    function color(name, fb) { var v = getComputedStyle(document.documentElement).getPropertyValue(name).trim(); return v || fb; }
+
+    function size() {
+      var pcs = getComputedStyle(cv.parentNode), w = (cv.parentNode.clientWidth || root.clientWidth) - (parseFloat(pcs.paddingLeft) || 0) - (parseFloat(pcs.paddingRight) || 0); if (!(w > 0)) return false;   // the box's inner width, not including its padding
+      dpr = window.devicePixelRatio || 1; W = w; H = w < 560 ? 300 : 200;
+      cv.style.width = W + 'px'; cv.style.height = H + 'px'; cv.width = Math.round(W * dpr); cv.height = Math.round(H * dpr);
+      return true;
+    }
+    function draw() {
+      if (!W && !size()) return;
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0); ctx.clearRect(0, 0, W, H);
+      var alive = color('--btn', '#2b6cb0'), gone = color('--muted', '#8a94a0'), line = color('--line-strong', '#c8d0d9'), accent = color('--accent', '#2b6cb0'), txt = color('--muted', '#6b7785');
+      var stack = W < 560, dotsW = stack ? W : Math.round(W * 0.56), dotsH = stack ? 150 : H;
+      var sx = dotsW / COLS, sy = dotsH / ROWS, rad = Math.min(sx, sy) * 0.34, k, x, y;
+      for (k = 0; k < N; k++) {
+        x = (k % COLS + 0.5) * sx; y = (Math.floor(k / COLS) + 0.5) * sy;
+        var d = death[k], since = t - d;
+        if (t < d) { ctx.globalAlpha = 1; ctx.fillStyle = alive; ctx.beginPath(); ctx.arc(x, y, rad, 0, 6.2832); ctx.fill(); }
+        else if (since < 0.9 && !reduce) { var q = since / 0.9; ctx.globalAlpha = 1 - q; ctx.fillStyle = gone; ctx.beginPath(); ctx.arc(x, y + q * rad * 1.2, rad * (1 - 0.5 * q), 0, 6.2832); ctx.fill(); }
+      }
+      ctx.globalAlpha = 1;
+      // the survivorship curve
+      var gx = stack ? 36 : dotsW + 40, gy = stack ? dotsH + 14 : 12, gw = W - gx - 12, gh = (stack ? H : H) - gy - 26;
+      ctx.font = '11px system-ui, sans-serif'; ctx.fillStyle = txt; ctx.strokeStyle = line; ctx.lineWidth = 1;
+      ctx.beginPath(); ctx.moveTo(gx, gy); ctx.lineTo(gx, gy + gh); ctx.lineTo(gx + gw, gy + gh); ctx.stroke();
+      ctx.textAlign = 'right'; ctx.textBaseline = 'middle'; ctx.fillText('100%', gx - 5, gy); ctx.fillText('0', gx - 5, gy + gh);
+      ctx.textAlign = 'center'; ctx.textBaseline = 'top';
+      var step = maxDay > 60 ? 20 : 10; for (var dd = 0; dd <= maxDay; dd += step) ctx.fillText(dd, gx + gw * dd / maxDay, gy + gh + 5);
+      ctx.fillText('Day', gx + gw / 2, gy + gh + 15);
+      function px(dayv) { return gx + gw * dayv / maxDay; } function py(v) { return gy + gh * (1 - v); }
+      ctx.strokeStyle = line; ctx.beginPath(); for (k = 0; k <= maxDay; k++) { if (k === 0) ctx.moveTo(px(k), py(curve[k])); else ctx.lineTo(px(k), py(curve[k])); } ctx.stroke();
+      ctx.strokeStyle = accent; ctx.lineWidth = 2.2; ctx.beginPath(); ctx.moveTo(px(0), py(curve[0]));
+      for (k = 1; k <= Math.floor(t); k++) ctx.lineTo(px(k), py(curve[k])); ctx.lineTo(px(t), py(surv(t))); ctx.stroke();
+      // the moving point, with a soft glow
+      var mx = px(t), my = py(surv(t)), halo = ctx.createRadialGradient(mx, my, 0, mx, my, 13);
+      halo.addColorStop(0, accent); halo.addColorStop(1, 'rgba(0,0,0,0)');
+      ctx.globalAlpha = 0.28; ctx.fillStyle = halo; ctx.beginPath(); ctx.arc(mx, my, 13, 0, 6.2832); ctx.fill(); ctx.globalAlpha = 1;
+      ctx.shadowColor = accent; ctx.shadowBlur = 10; ctx.fillStyle = accent; ctx.beginPath(); ctx.arc(mx, my, 4, 0, 6.2832); ctx.fill();
+      ctx.shadowBlur = 0; ctx.shadowColor = 'transparent';
+      var f = surv(t), md = median();
+      read.textContent = 'Day ' + Math.round(t) + ' · ' + Math.round(f * 100) + '% alive' + (md !== null ? ' · half have died by day ' + Math.round(md) : '');
+      cv.setAttribute('aria-label', 'Dots for ' + N + ' mosquitoes dying off under the ' + model + ' model. Day ' + Math.round(t) + ': ' + Math.round(f * 100) + '% alive.');
+      scrub.value = Math.round(t / maxDay * 1000);
+    }
+    function setPlaying(on) {
+      playing = on; playBtn.innerHTML = '<i class="fa fa-' + (on ? 'pause' : (t >= maxDay ? 'rotate-left' : 'play')) + '" role="presentation"></i> ' + (on ? 'Pause' : (t >= maxDay ? 'Replay' : 'Play'));
+      if (on) { window.pvPauseOthers(root); last = 0; cancelAnimationFrame(raf); raf = requestAnimationFrame(tick); }
+    }
+    window.pvDemos.push({root: root, pause: function () { if (playing) setPlaying(false); }});
+    function tick(ts) {
+      if (!playing) return;
+      if (!last) last = ts;
+      t = Math.min(maxDay, t + (ts - last) / 1000 * (maxDay / SECS)); last = ts; draw();
+      if (t >= maxDay) { setPlaying(false); draw(); return; }
+      raf = requestAnimationFrame(tick);
+    }
+    playBtn.addEventListener('click', function () { if (!playing && t >= maxDay) t = 0; setPlaying(!playing); started = true; if (!playing) draw(); });
+    scrub.addEventListener('input', function () { t = scrub.value / 1000 * maxDay; setPlaying(false); draw(); });
+    root.querySelectorAll('.cohort-m').forEach(function (b) {
+      b.addEventListener('click', function () {
+        root.querySelectorAll('.cohort-m').forEach(function (x) { var on = x === b; x.classList.toggle('on', on); x.setAttribute('aria-pressed', on ? 'true' : 'false'); });
+        build(b.getAttribute('data-model')); started = true; if (reduce) { setPlaying(false); draw(); } else { setPlaying(true); }
+      });
+    });
+    if (window.ResizeObserver) new ResizeObserver(function () { W = 0; draw(); }).observe(cv.parentNode);
+    new MutationObserver(function () { draw(); }).observe(document.documentElement, {attributes: true, attributeFilter: ['data-theme']});
+    build('logistic'); setPlaying(false); draw();
+    // Start by itself once it fills most of the screen
+    if (!reduce) window.pvWhenInView(root, function () { if (!started) { started = true; setPlaying(true); } });
+  });
+})();
+
+
+// Cards in the same row: even out the title and summary heights so every preview plot and effect bar lines up across the row
+(function () {
+  function align() {
+    document.querySelectorAll('.cards-grid').forEach(function (grid) {
+      var cards = Array.prototype.filter.call(grid.querySelectorAll('.assump-card'), function (c) { return c.offsetParent !== null; });
+      if (!cards.length) return;
+      var parts = cards.map(function (c) { return [c.querySelector('.assump-head'), c.querySelector('.assump-summary')]; });
+      parts.forEach(function (p) { p.forEach(function (el) { if (el) el.style.minHeight = ''; }); });    // measure at natural height first
+      var rows = {};
+      cards.forEach(function (c, i) {
+        var key = Math.round(c.offsetTop), h = parts[i][0] ? parts[i][0].offsetHeight : 0, sm = parts[i][1] ? parts[i][1].offsetHeight : 0;
+        var r = rows[key] || (rows[key] = {h: 0, s: 0, idx: []}); r.h = Math.max(r.h, h); r.s = Math.max(r.s, sm); r.idx.push(i);
+      });
+      Object.keys(rows).forEach(function (k) {
+        var r = rows[k]; if (r.idx.length < 2) return;
+        r.idx.forEach(function (i) {
+          if (parts[i][0]) parts[i][0].style.minHeight = r.h + 'px';
+          if (parts[i][1]) parts[i][1].style.minHeight = r.s + 'px';
+        });
+      });
+    });
+  }
+  var queued = false;
+  function queue() { if (!queued) { queued = true; requestAnimationFrame(function () { queued = false; align(); }); } }
+  $(function () {
+    document.querySelectorAll('.cards-grid').forEach(function (g) {
+      if (window.ResizeObserver) new ResizeObserver(queue).observe(g);
+      // titles or summaries changing text (a new preset, mortality model, or distribution) can change their height
+      new MutationObserver(function (muts) {
+        if (muts.some(function (m) { return !(m.target.style && m.attributeName === 'style'); })) queue();
+      }).observe(g, {childList: true, subtree: true, characterData: true, attributes: true, attributeFilter: ['class']});
+    });
+    window.addEventListener('resize', queue);
+    $(document).on('shown.bs.tab', queue);
+    if (document.fonts && document.fonts.ready) document.fonts.ready.then(queue);
+    setTimeout(queue, 400); queue();
+  });
+})();
+
+
+// ---- Bar charts draw in after a run: forecast bars rise one after another; sensitivity bars grow out of the centre line together ----
+// The charts are pictures, so each bar is hidden by a hole cut in the picture's clip-path (the card shows through) and the holes shrink.
+// The bar positions come from the server (hoverBars) and the picture's coordinate map from Shiny, the same data the hover tooltips use.
+(function () {
+  var reduce = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  var CHARTS = {forecast_plot: 1, sens_plot: 1, surv_plot_s: 1, surv_plot_h: 1};     // the last two have no bars: their lines zip across
+  var LINES = {surv_plot_s: 1, surv_plot_h: 1};
+  var fresh = {};                                // charts that should draw in the next time they are drawn (set by Run, used up once)
+  var barsSeq = 0, runSeq = {}, bars = {}, barsAt = {}, maps = {};
+  // The run the app does by itself when the page opens counts as a run too (it sends no 'run' event), so every chart's first drawing animates
+  Object.keys(CHARTS).forEach(function (n) { fresh[n] = true; runSeq[n] = 0; });
+  function ease(p) { p = Math.max(0, Math.min(1, p)); return 1 - Math.pow(1 - p, 3); }
+
+  $(document).on('shiny:inputchanged', function (e) { if (e.name === 'run') { Object.keys(CHARTS).forEach(function (n) { fresh[n] = true; runSeq[n] = barsSeq; }); } });
+  // (the hover tooltips own the 'hoverBars' message; they announce each one here)
+  $(document).on('pv:bars', function (e, m) { barsSeq++; bars[m.chart] = m.bars || []; barsAt[m.chart] = barsSeq; });
+  $(document).on('shiny:value', function (e) {
+    var name = e.name; if (!CHARTS[name]) return;
+    maps[name] = e.value && e.value.coordmap;
+    if (reduce || !fresh[name]) return;
+    var el = document.getElementById(name), im = el && el.querySelector('img'); if (!el) return;
+    el.style.visibility = 'hidden';              // no flash of the finished chart while the bar positions arrive
+    PV_GATE.after(function () {
+    var tries = 0, seenAt = Date.now();
+    (function wait() {
+      // (an identical re-run gives an identical picture, so "has the picture changed" cannot be used; a short wait lets the new one land)
+      var img = el.querySelector('img'), ready = Date.now() - seenAt > 150 && img && img.complete && img.naturalWidth && (LINES[name] || barsAt[name] > (runSeq[name] || 0)) && maps[name];
+      if (ready) { fresh[name] = false; start(name, el, img); return; }
+      if (++tries > 40) { fresh[name] = false; el.style.visibility = ''; return; }     // give up after ~2 s: just show the chart
+      setTimeout(wait, 50);
+    })();
+    });
+  });
+
+  // Every time a tab is opened its charts draw in again. The data is hidden the moment the tab is clicked (so the finished chart does not
+  // flash while the tab fades in), then drawn in once the tab is showing. The first view after a run is handled by the code above instead.
+  var replay = {};
+  $(document).on('show.bs.tab', '#tabs a[data-toggle="tab"]', function (e) {
+    if (reduce || PV_GATE.on) return;
+    var href = e.target.getAttribute('href'), pane = href && href.charAt(0) === '#' ? document.querySelector(href) : null; replay = {};
+    if (!pane) return;
+    Object.keys(CHARTS).forEach(function (name) {
+      var el = pane.querySelector('#' + name), img = el && el.querySelector('img');
+      if (!el || !img || fresh[name] || !maps[name]) return;
+      replay[name] = true; el.style.visibility = 'hidden';
+      setTimeout(function () { if (replay[name]) { replay[name] = false; el.style.visibility = ''; } }, 2500);    // safety: never leave a chart hidden
+    });
+  });
+  $(document).on('shown.bs.tab', '#tabs a[data-toggle="tab"]', function () {
+    Object.keys(replay).forEach(function (name) {
+      if (!replay[name]) return; replay[name] = false;
+      var el = document.getElementById(name), img = el && el.querySelector('img');
+      if (img && img.complete && img.naturalWidth) start(name, el, img); else if (el) el.style.visibility = '';
+    });
+  });
+
+  function start(name, el, img) {
+    var map = maps[name], panel = map && map.panels && map.panels[0], list = bars[name];
+    if (!panel || (!LINES[name] && (!list || !list.length)) || !img.getBoundingClientRect().width) { el.style.visibility = ''; return; }
+    var ir = img.getBoundingClientRect(), W = ir.width, H = ir.height, sx = map.dims.width / W, sy = map.dims.height / H;
+    var d = panel.domain, g = panel.range;
+    function cx(v) { return (g.left + (v - d.left) / (d.right - d.left) * (g.right - g.left)) / sx; }
+    function cy(v) { return (g.bottom - (v - d.bottom) / (d.top - d.bottom) * (g.bottom - g.top)) / sy; }
+    var isSens = name === 'sens_plot', isLines = !!LINES[name], L = g.left / sx, R = g.right / sx, DUR = isLines ? 850 : isSens ? 1150 : 1500, t0 = null;
+    var n = list ? list.length : 0;
+    function rect(x, y, w, h) { return w > 0.2 && h > 0.2 ? 'M' + x.toFixed(1) + ' ' + y.toFixed(1) + 'h' + w.toFixed(1) + 'v' + h.toFixed(1) + 'h' + (-w).toFixed(1) + 'z' : ''; }
+    function render(t) {
+      var holes = '';
+      if (isLines) {
+        // Only the plot area is covered, so the axes and labels stay. The edge of the reveal is slanted, so the lines near the top
+        // of the chart are drawn a moment before the ones lower down, as if each run's line were zipping across.
+        var T = g.top / sy, B = g.bottom / sy, skew = Math.min(160, (R - L) * 0.22), e = ease(t);
+        var front = L - skew + e * (R - L + skew);
+        function cl(v) { return Math.max(L, Math.min(R + 2, v)); }
+        holes = 'M' + cl(front).toFixed(1) + ' ' + (T - 2).toFixed(1) + 'L' + (R + 2).toFixed(1) + ' ' + (T - 2).toFixed(1) + 'L' + (R + 2).toFixed(1) + ' ' + (B + 2).toFixed(1) +
+                'L' + cl(front + skew).toFixed(1) + ' ' + (B + 2).toFixed(1) + 'z';
+        img.style.clipPath = t >= 1 ? '' : 'path(evenodd,"M0 0H' + W.toFixed(1) + 'V' + H.toFixed(1) + 'H0z' + holes + '")';
+        return;
+      }
+      list.forEach(function (b, i) {
+        var x0 = cx(b.x0), x1 = cx(b.x1), top = cy(b.y1), bot = cy(b.y0);
+        if (!isSens) {                           // histogram: bar i starts a little after bar i-1 and rises from the baseline
+          var e = ease((t - (i / n) * 0.6) / 0.4);
+          holes += rect(x0, top - 1, x1 - x0, (bot - top) * (1 - e) + 1);
+        } else {                                 // sensitivity: out from the zero line, then the interval and the value label
+          var c = cx(0), pos = b.x1 > 0 && b.x0 >= 0, end = pos ? x1 : x0, e1 = ease(t / 0.62), p = ease((t - 0.62) / 0.38), pad = 3;
+          var y = top - pad, h = bot - top + 2 * pad, sx0;
+          if (pos) { sx0 = e1 < 1 ? c + 1 + e1 * (end - c - 1) : end + p * (R + 24 - end); holes += rect(sx0, y, R + 24 - sx0, h); }
+          else { sx0 = e1 < 1 ? c - 1 + e1 * (end - c + 1) : end - p * (end - L); holes += rect(L, y, sx0 - L, h); }
+        }
+      });
+      img.style.clipPath = t >= 1 ? '' : 'path(evenodd,"M0 0H' + W.toFixed(1) + 'V' + H.toFixed(1) + 'H0z' + holes + '")';
+    }
+    function frame(ts) {
+      if (!img.isConnected) { img = el.querySelector('img'); if (!img) return; }      // Shiny swapped the picture: carry on with the new one
+      if (t0 === null) t0 = ts;
+      var t = Math.min(1, (ts - t0) / DUR); render(t);
+      if (t < 1) requestAnimationFrame(frame);
+    }
+    render(0);                                   // every bar hidden before the chart is shown, so there is no flash of the finished chart
+    el.style.visibility = '';
+    requestAnimationFrame(frame);
+  }
+})();
+
+
+// ---- Skeleton shown in place of the results while the Run bar fills (see PV_GATE at the top) ----
+$(function () {
+  $('.results-body').each(function () {
+    if (this.querySelector(':scope > .pv-skel')) return;
+    var sk = document.createElement('div'); sk.className = 'pv-skel'; sk.setAttribute('aria-hidden', 'true');
+    sk.innerHTML = '<div class="sk-line sk-w40"></div><div class="sk-tiles"><i></i><i></i><i></i><i></i></div><div class="sk-line sk-w70"></div><div class="sk-chart"></div><div class="sk-line sk-w55"></div>';
+    this.insertBefore(sk, this.firstChild);
+  });
+});
+
+
+// Reset pop-up: "Start over" swaps to its confirmation inside the same dialog (a second dialog would flash the backdrop)
+$(document).on('click', '#start_over', function () {
+  var m = $(this).closest('.modal'); m.find('.reset-panes').addClass('confirming'); m.find('.modal-title').text('Start over?');
+});
+$(document).on('click', '#reset_back', function () {
+  var m = $(this).closest('.modal'); m.find('.reset-panes').removeClass('confirming'); m.find('.modal-title').text('Reset');
+});
+
+
+// Quick summary: the run details share its bar, so a click anywhere on the bar (but not on the Re-run link) opens or closes it
+$(document).on('click', '.insight-bar', function (e) {
+  if ($(e.target).closest('a, button').length) return;
+  $(this).find('.insight-head').trigger('click');
+});
+
+
+// ---- Past runs header: a small line of median Ct across your runs (oldest to newest), so you can see which way your changes are pushing it ----
+$(function () {
+  if (!window.Shiny) return;
+  var reduce = window.matchMedia('(prefers-reduced-motion: reduce)').matches, W = 58, H = 20, PAD = 3;
+  function fmt(v) { return String(parseFloat(v.toPrecision(3))); }
+  function draw(runs) {
+    var row = document.querySelector('.history-title-row'); if (!row) return;
+    var el = row.querySelector('.run-spark');
+    var pts = (runs || []).filter(function (r) { return isFinite(Number(r.med)); });
+    if (pts.length < 2) { if (el) el.remove(); return; }              // one run has no trend to show
+    if (!el) { el = document.createElement('span'); el.className = 'run-spark'; row.appendChild(el); }
+    var v = pts.map(function (r) { return Number(r.med); }), lo = Math.min.apply(null, v), hi = Math.max.apply(null, v), span = hi - lo;
+    var xs = function (i) { return PAD + (W - 2 * PAD) * i / (v.length - 1); };
+    var ys = function (x) { return span > 0 ? H - PAD - (H - 2 * PAD) * (x - lo) / span : H / 2; };
+    var d = v.map(function (x, i) { return (i ? 'L' : 'M') + xs(i).toFixed(1) + ' ' + ys(x).toFixed(1); }).join('');
+    var lx = xs(v.length - 1), ly = ys(v[v.length - 1]), up = v[v.length - 1] > v[v.length - 2], flat = v[v.length - 1] === v[v.length - 2];
+    el.className = 'run-spark ' + (flat ? 'flat' : up ? 'up' : 'down');
+    el.innerHTML = '<svg width="' + W + '" height="' + H + '" viewBox="0 0 ' + W + ' ' + H + '" aria-hidden="true" focusable="false">' +
+      '<path class="rs-line" d="' + d + '" pathLength="100"/><circle class="rs-dot" cx="' + lx.toFixed(1) + '" cy="' + ly.toFixed(1) + '" r="2.6"/></svg>';
+    var label = 'Median Ct by run: ' + pts.map(function (r) { return r.name + ' ' + fmt(Number(r.med)); }).join(', ');
+    el.setAttribute('title', label); el.setAttribute('role', 'img'); el.setAttribute('aria-label', label);
+    if (!reduce) { var line = el.querySelector('.rs-line'); if (line.animate) line.animate([{strokeDashoffset: 100}, {strokeDashoffset: 0}], {duration: 600, easing: 'ease-out'}); }
+  }
+  Shiny.addCustomMessageHandler('runSeries', function (m) { PV_GATE.after(function () { draw(m && m.runs); }); });
+});
+
+
+// ---- About tab: two more animations (age structure, incubation race) ----
+(function () {
+  var reduce = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  function cvar(name, fb) { var v = getComputedStyle(document.documentElement).getPropertyValue(name).trim(); return v || fb; }
+  function rng(seed) { return function () { seed |= 0; seed = seed + 0x6D2B79F5 | 0; var x = Math.imul(seed ^ seed >>> 15, 1 | seed); x = x + Math.imul(x ^ x >>> 7, 61 | x) ^ x; return ((x ^ x >>> 14) >>> 0) / 4294967296; }; }
+  function blend(ctx, c1, c2, f) {
+    function rgb(c) { ctx.fillStyle = '#000'; ctx.fillStyle = c; var h = ctx.fillStyle; return [parseInt(h.substr(1, 2), 16), parseInt(h.substr(3, 2), 16), parseInt(h.substr(5, 2), 16)]; }
+    var a = rgb(c1), b = rgb(c2); return 'rgb(' + a.map(function (v, i) { return Math.round(v + (b[i] - v) * f); }).join(',') + ')';
+  }
+  function interp(curve, tt) { var i = Math.max(0, Math.min(curve.length - 1, Math.floor(tt))), j = Math.min(curve.length - 1, i + 1); return curve[i] + (curve[j] - curve[i]) * (tt - i); }
+  function timeFor(curve, v) { for (var i = 0; i < curve.length - 1; i++) if (curve[i] >= v && curve[i + 1] < v) return i + (curve[i] - v) / Math.max(1e-9, curve[i] - curve[i + 1]); return Infinity; }
+  function sizeCanvas(cv, hWide, hNarrow) {
+    var pcs = getComputedStyle(cv.parentNode), w = cv.parentNode.clientWidth - (parseFloat(pcs.paddingLeft) || 0) - (parseFloat(pcs.paddingRight) || 0); if (!(w > 0)) return null;   // the box's inner width, not including its padding
+    var dpr = window.devicePixelRatio || 1, h = w < 560 ? hNarrow : hWide;
+    cv.style.width = w + 'px'; cv.style.height = h + 'px'; cv.width = Math.round(w * dpr); cv.height = Math.round(h * dpr);
+    return {w: w, h: h, dpr: dpr};
+  }
+
+  // Shared play / scrub / model-button plumbing for both widgets
+  function wire(root, o) {
+    var playBtn = root.querySelector('.cohort-play'), playing = false, last = 0, raf = 0, started = false;
+    o.state.t = 0;
+    function label() { if (!playBtn) return; playBtn.innerHTML = '<i class="fa fa-' + (playing ? 'pause' : (o.state.t >= o.state.max ? 'rotate-left' : 'play')) + '" role="presentation"></i> ' + (playing ? 'Pause' : (o.state.t >= o.state.max ? 'Replay' : 'Play')); }
+    function set(on) { playing = on; label(); if (on) { window.pvPauseOthers(root); last = 0; cancelAnimationFrame(raf); raf = requestAnimationFrame(tick); } }
+    window.pvDemos.push({root: root, pause: function () { if (playing) set(false); }});
+    function tick(ts) {
+      if (!playing) return; if (!last) last = ts;
+      o.state.t = Math.min(o.state.max, o.state.t + (ts - last) / 1000 * (o.state.max / o.secs())); last = ts; o.draw();
+      if (o.state.t >= o.state.max) { set(false); o.draw(); return; }
+      raf = requestAnimationFrame(tick);
+    }
+    if (playBtn) playBtn.addEventListener('click', function () { if (!playing && o.state.t >= o.state.max) o.state.t = 0; started = true; set(!playing); if (!playing) o.draw(); });   // (the age-structure figure has no button: it just draws in)
+    root.querySelectorAll('.cohort-m').forEach(function (b) {
+      b.addEventListener('click', function () {
+        root.querySelectorAll('.cohort-m').forEach(function (x) { var on = x === b; x.classList.toggle('on', on); x.setAttribute('aria-pressed', on ? 'true' : 'false'); });
+        o.setModel(b.getAttribute('data-model')); o.state.t = 0; started = true; if (reduce) { o.state.t = o.state.max; set(false); o.draw(); } else set(true);
+      });
+    });
+    if (window.ResizeObserver) new ResizeObserver(function () { o.resize(); o.draw(); }).observe(o.canvas.parentNode);
+    new MutationObserver(function () { o.draw(); }).observe(document.documentElement, {attributes: true, attributeFilter: ['data-theme']});
+    if (!reduce) window.pvWhenInView(root, function () { if (!started) { started = true; o.state.t = 0; set(true); } });   // starts once it fills most of the screen
+    return {play: function () { o.state.t = 0; set(true); }, label: label};
+  }
+
+  // ---- Synchronous vs stable age structure, as in Styer et al. (2007): the share of the population at each age, and the resulting Ct ----
+  // Synchronous emergence is a population entirely of young adults, spread equally over ages 3 to 6 days (Ct is averaged over those ages).
+  // The stable age distribution has adults emerging continuously: the share at age x is l(x) e^(-r x), scaled to add up to 100%.
+  $(function () {
+    var root = document.getElementById('agedemo'); if (!root) return;
+    var data; try { data = JSON.parse(root.getAttribute('data-age')); } catch (e) { return; }
+    var cv = root.querySelector('canvas'), ctx = cv.getContext('2d'), read = root.querySelector('.cohort-read');
+    var MAXD = 30, YMAX = 0.27, model = 'logistic', S = {t: 0, max: 1}, dim = null;
+    function ease(x) { x = Math.max(0, Math.min(1, x)); return 1 - Math.pow(1 - x, 3); }
+    function resize() { dim = sizeCanvas(cv, 208, 330); }
+    function draw() {
+      if (!dim) resize(); if (!dim) return;
+      var W = dim.w, H = dim.h, p = S.t, w = data.w[model], side = W >= 560, a;
+      ctx.setTransform(dim.dpr, 0, 0, dim.dpr, 0, 0); ctx.clearRect(0, 0, W, H);
+      var btn = cvar('--btn', '#2b6cb0'), accent = cvar('--accent', '#2b6cb0'), line = cvar('--line-strong', '#c8d0d9'), grid = cvar('--line', '#e3e8ee'), muted = cvar('--muted', '#6b7785'), txt = cvar('--text', '#1f2933');
+      // Side by side on a wide screen (same scale and age axis in both), stacked on a narrow one
+      var hP = side ? 92 : 78, top0 = side ? 58 : 38, yLab = side ? 36 : 44, pad = side ? 14 : 14;
+      var geo = side ? [{x0: yLab, x1: W / 2 - pad, top: top0}, {x0: W / 2 + yLab, x1: W - pad, top: top0}]
+                     : [{x0: yLab, x1: W - pad, top: top0}, {x0: yLab, x1: W - pad, top: top0 + hP + 50}];
+      var panels = [{title: 'Synchronous emergence', sub: 'entirely young: ages 3 to 6 days, equally', col: accent, ct: data.ct.sync[model]},
+                    {title: 'Stable age distribution', sub: 'adults keep emerging, so every age is present', col: accent, ct: data.ct.stable[model]}];
+      panels.forEach(function (pn, i) {
+        pn.x0 = geo[i].x0; pn.x1 = geo[i].x1; pn.top = geo[i].top; pn.bot = pn.top + hP; pn.slot = (pn.x1 - pn.x0) / (MAXD + 1); pn.bw = Math.max(2, pn.slot * 0.8);
+        pn.X = function (age) { return pn.x0 + pn.slot * (age + 0.5); };
+        ctx.textAlign = 'left'; ctx.textBaseline = 'alphabetic'; ctx.font = '600 12.5px system-ui, sans-serif'; ctx.fillStyle = txt;
+        var tw = ctx.measureText(pn.title).width;
+        if (side) { ctx.fillText(pn.title, pn.x0 - yLab + 4, 20); ctx.font = '12px system-ui, sans-serif'; ctx.fillStyle = muted; ctx.fillText(pn.sub, pn.x0 - yLab + 4, 38); }
+        else { ctx.fillText(pn.title, pn.x0, pn.top - 12); ctx.font = '12px system-ui, sans-serif'; ctx.fillStyle = muted; ctx.fillText(pn.sub, pn.x0 + tw + 10, pn.top - 12); }
+        // gridlines and share labels
+        ctx.lineWidth = 1; ctx.font = '10.5px system-ui, sans-serif'; ctx.textAlign = 'right'; ctx.textBaseline = 'middle';
+        [0, 0.1, 0.2].forEach(function (v) { var y = pn.bot - hP * v / YMAX; ctx.strokeStyle = v === 0 ? line : grid; ctx.beginPath(); ctx.moveTo(pn.x0, y); ctx.lineTo(pn.x1, y); ctx.stroke(); ctx.fillStyle = muted; ctx.fillText(Math.round(v * 100) + '%', pn.x0 - 6, y); });
+      });
+      // age axis under each panel (side by side) or under the lower one (stacked)
+      ctx.textAlign = 'center'; ctx.textBaseline = 'top'; ctx.font = '11px system-ui, sans-serif'; ctx.fillStyle = muted; ctx.strokeStyle = line;
+      (side ? panels : [panels[1]]).forEach(function (pn) {
+        for (a = 0; a <= MAXD; a += 10) { ctx.fillText(a, pn.X(a), pn.bot + 5); ctx.beginPath(); ctx.moveTo(pn.X(a), pn.bot); ctx.lineTo(pn.X(a), pn.bot + 3); ctx.stroke(); }
+        ctx.fillText('Age (days)', (pn.x0 + pn.x1) / 2, pn.bot + 19);
+      });
+      // bars: synchronous first, then the stable mix filling in from the youngest age
+      var ps = panels[0], pt = panels[1];
+      ctx.fillStyle = accent; for (a = 3; a <= 6; a++) { var h1 = hP * 0.25 / YMAX * ease(p * 2.2); ctx.fillRect(ps.X(a) - ps.bw / 2, ps.bot - h1, ps.bw, h1); }
+      ctx.fillStyle = accent; for (a = 0; a <= MAXD; a++) { var h2 = hP * w[a] / YMAX * ease(p * 2.2 - 0.5 - a / MAXD * 0.5); ctx.fillRect(pt.X(a) - pt.bw / 2, pt.bot - h2, pt.bw, h2); }
+      // the result for each: Ct, shown once the bars are in
+      var ca = ease((p - 0.75) / 0.25); ctx.globalAlpha = ca; ctx.textBaseline = 'alphabetic'; ctx.textAlign = 'right'; ctx.font = '600 15px system-ui, sans-serif';
+      panels.forEach(function (pn) { ctx.fillStyle = pn.col; ctx.fillText('Ct = ' + pn.ct.toFixed(1), pn.x1 - 4, pn.top + 20); }); ctx.globalAlpha = 1;
+      var cs = data.ct.sync[model], ct = data.ct.stable[model], more = Math.round((cs / ct - 1) * 100);
+      read.textContent = 'Under the ' + model.charAt(0).toUpperCase() + model.slice(1) + ' model, Ct is ' + more + '% higher when the population is entirely young (' + cs.toFixed(1) + ' against ' + ct.toFixed(1) + ')';
+      cv.setAttribute('aria-label', 'Share of mosquitoes at each age. Synchronous emergence: all at ages 3 to 6 days, Ct ' + cs.toFixed(1) + '. Stable age distribution: every age present, mostly young, Ct ' + ct.toFixed(1) + '. Synchronous Ct is ' + more + ' percent higher.');
+    }
+    var ctl = wire(root, {canvas: cv, state: S, draw: draw, resize: resize, secs: function () { return 1.9; }, setModel: function (m) { model = m; }});
+    if (reduce) S.t = 1;
+    resize(); ctl.label(); draw();
+  });
+
+  // ---- The incubation race ----
+  $(function () {
+    var root = document.getElementById('racedemo'); if (!root) return;
+    var lx; try { lx = JSON.parse(root.getAttribute('data-lx')); } catch (e) { return; }
+    var cv = root.querySelector('canvas'), ctx = cv.getContext('2d'), read = root.querySelector('.cohort-read'), days = root.querySelector('.race-days'), dout = root.querySelector('.race-days-out');
+    var COLS = 25, ROWS = 8, N = COLS * ROWS, model = 'logistic', n = 10, S = {t: 0, max: 11.5}, dim = null, death = [];
+    function build() {
+      var curve = lx[model], order = [], k; for (k = 0; k < N; k++) order.push(k);
+      var r = rng(777); for (k = N - 1; k > 0; k--) { var j = Math.floor(r() * (k + 1)), tmp = order[k]; order[k] = order[j]; order[j] = tmp; }
+      death = new Array(N); for (k = 0; k < N; k++) death[order[k]] = timeFor(curve, (N - k - 0.5) / N);
+      S.max = n + 1.5;
+    }
+    function resize() { dim = sizeCanvas(cv, 250, 385); }
+    function draw() {
+      if (!dim) resize(); if (!dim) return;
+      var W = dim.w, H = dim.h, t = S.t, curve = lx[model];
+      ctx.setTransform(dim.dpr, 0, 0, dim.dpr, 0, 0); ctx.clearRect(0, 0, W, H);
+      var alive = cvar('--btn', '#2b6cb0'), line = cvar('--line-strong', '#c8d0d9'), muted = cvar('--muted', '#6b7785'), txt = cvar('--text', '#1f2933'), warm = '#D55E00';
+      // legend
+      ctx.font = '12px system-ui, sans-serif'; ctx.textBaseline = 'middle'; ctx.textAlign = 'left';
+      var cur = blend(ctx, alive, warm, Math.min(1, t / n));      // the pathogen develops inside every living mosquito, so they slowly turn orange
+      var lg = [[alive, 'alive, pathogen developing', false], [warm, 'survived: can now pass it on', false], [line, 'died', true]], lgx = 12;
+      lg.forEach(function (it) { ctx.beginPath(); ctx.arc(lgx + 5, 13, 4.2, 0, 6.2832); if (it[2]) { ctx.strokeStyle = it[0]; ctx.lineWidth = 1.2; ctx.stroke(); } else { ctx.fillStyle = it[0]; ctx.fill(); }
+        ctx.fillStyle = muted; ctx.fillText(it[1], lgx + 15, 13); lgx += 15 + ctx.measureText(it[1]).width + 18; });
+      var side = W >= 560, dw = side ? Math.round(W * 0.54) : W, dotsTop = 30, dotsH = side ? H - 62 - dotsTop : Math.min(150, dw / COLS * ROWS * 1.1);
+      var sx = dw / COLS, sy = dotsH / ROWS, rad = Math.min(sx, sy) * 0.34, k, x, y;
+      for (k = 0; k < N; k++) {
+        x = (k % COLS + 0.5) * sx; y = dotsTop + (Math.floor(k / COLS) + 0.5) * sy; var dd = death[k], since = t - dd;
+        if (dd >= n) {                       // makes it through the incubation period
+          if (t < n) { ctx.globalAlpha = 1; ctx.fillStyle = cur; }
+          else { var pop = Math.min(1, (t - n) / 0.8); ctx.globalAlpha = 1; ctx.fillStyle = warm; ctx.beginPath(); ctx.arc(x, y, rad * (1 + 0.45 * Math.sin(pop * Math.PI)), 0, 6.2832); ctx.fill(); continue; }
+          ctx.beginPath(); ctx.arc(x, y, rad, 0, 6.2832); ctx.fill();
+        } else if (t < dd) { ctx.globalAlpha = 1; ctx.fillStyle = cur; ctx.beginPath(); ctx.arc(x, y, rad, 0, 6.2832); ctx.fill(); }
+        else if (since < 0.9 && !reduce) { var q = since / 0.9; ctx.globalAlpha = 1 - q; ctx.fillStyle = muted; ctx.beginPath(); ctx.arc(x, y + q * rad * 1.2, rad * (1 - 0.5 * q), 0, 6.2832); ctx.fill(); }
+        else { ctx.globalAlpha = 0.35; ctx.strokeStyle = line; ctx.lineWidth = 1; ctx.beginPath(); ctx.arc(x, y, rad * 0.55, 0, 6.2832); ctx.stroke(); }
+      }
+      ctx.globalAlpha = 1;
+      // timeline: days 0 to n, filling as the race goes; the finish line is the end of the incubation period
+      var tx0 = 12, tx1 = dw - 12, ty = H - 26, p = Math.min(1, t / n);
+      ctx.strokeStyle = line; ctx.lineWidth = 6; ctx.lineCap = 'round'; ctx.beginPath(); ctx.moveTo(tx0, ty); ctx.lineTo(tx1, ty); ctx.stroke();
+      ctx.strokeStyle = cur; ctx.beginPath(); ctx.moveTo(tx0, ty); ctx.lineTo(tx0 + (tx1 - tx0) * p, ty); ctx.stroke(); ctx.lineCap = 'butt';
+      ctx.fillStyle = muted; ctx.font = '11px system-ui, sans-serif'; ctx.textBaseline = 'top'; ctx.textAlign = 'left'; ctx.fillText('infected (day 0)', tx0, ty + 9);
+      ctx.textAlign = 'right'; ctx.fillStyle = t >= n ? warm : muted; ctx.fillText('day ' + n + ': incubation period ends', tx1, ty + 9);
+      // the survivorship curve (beside the dots, or under them on a narrow screen): where the race is on it, and what is left when the incubation period ends
+      var cx0, cx1, cy0, cy1, dd2;
+      if (side) { cx0 = dw + 40; cx1 = W - 16; cy0 = dotsTop + 8; cy1 = dotsTop + dotsH - 6; } else { cx0 = 40; cx1 = W - 16; cy0 = dotsTop + dotsH + 22; cy1 = cy0 + 78; }
+      var XM = Math.max(20, n + 6), cxs = function (dv) { return cx0 + (cx1 - cx0) * dv / XM; }, cys = function (v) { return cy1 - (cy1 - cy0) * v; };
+      ctx.lineWidth = 1; ctx.strokeStyle = line; ctx.beginPath(); ctx.moveTo(cx0, cy0); ctx.lineTo(cx0, cy1); ctx.lineTo(cx1, cy1); ctx.stroke();
+      ctx.font = '10.5px system-ui, sans-serif'; ctx.fillStyle = muted; ctx.textAlign = 'right'; ctx.textBaseline = 'middle';
+      [0, 0.5, 1].forEach(function (v) { ctx.fillText(Math.round(v * 100) + '%', cx0 - 5, cys(v)); });
+      ctx.textAlign = 'center'; ctx.textBaseline = 'top'; var stp = XM <= 20 ? 5 : 10; for (dd2 = 0; dd2 <= XM; dd2 += stp) ctx.fillText(dd2, cxs(dd2), cy1 + 4);
+      ctx.fillText('Age (days)', (cx0 + cx1) / 2, cy1 + 16);
+      ctx.strokeStyle = line; ctx.lineWidth = 1.6; ctx.beginPath(); for (dd2 = 0; dd2 <= XM; dd2 += 0.5) { if (dd2 === 0) ctx.moveTo(cxs(dd2), cys(interp(curve, dd2))); else ctx.lineTo(cxs(dd2), cys(interp(curve, dd2))); } ctx.stroke();
+      ctx.setLineDash([4, 4]); ctx.lineWidth = 1; ctx.strokeStyle = t >= n ? warm : muted; ctx.beginPath(); ctx.moveTo(cxs(n), cy0); ctx.lineTo(cxs(n), cy1); ctx.stroke(); ctx.setLineDash([]);
+      var te = Math.min(t, n); ctx.strokeStyle = cur; ctx.lineWidth = 2.6; ctx.beginPath(); ctx.moveTo(cxs(0), cys(1)); for (dd2 = 0.25; dd2 < te; dd2 += 0.25) ctx.lineTo(cxs(dd2), cys(interp(curve, dd2))); ctx.lineTo(cxs(te), cys(interp(curve, te))); ctx.stroke();
+      var px = cxs(te), py = cys(interp(curve, te));
+      // at the end of the incubation period the point swells and glows once, like the dots that survived
+      var ppop = t >= n ? Math.sin(Math.min(1, (t - n) / 0.8) * Math.PI) : 0;
+      ctx.save(); ctx.shadowColor = cur; ctx.shadowBlur = 10 + 16 * ppop; ctx.fillStyle = cur; ctx.beginPath(); ctx.arc(px, py, 4 * (1 + 0.9 * ppop), 0, 6.2832); ctx.fill(); ctx.restore();
+      if (t >= n) {
+        ctx.setLineDash([2, 3]); ctx.lineWidth = 1; ctx.strokeStyle = warm; ctx.beginPath(); ctx.moveTo(cx0, py); ctx.lineTo(px, py); ctx.stroke(); ctx.setLineDash([]);
+        var lbl = Math.round(interp(curve, n) * 100) + '% survive'; ctx.font = '600 12px system-ui, sans-serif'; ctx.fillStyle = warm; ctx.textBaseline = 'bottom';
+        if (px + 12 + ctx.measureText(lbl).width > cx1) { ctx.textAlign = 'right'; ctx.fillText(lbl, px - 8, py - 6); } else { ctx.textAlign = 'left'; ctx.fillText(lbl, px + 8, py - 6); }
+      }
+      var f = interp(curve, Math.min(t, n)), done = t >= n;
+      read.textContent = done ? Math.round(interp(curve, n) * 100) + '% make it through ' + n + ' days and can now transmit' : 'Day ' + Math.floor(t) + ' of ' + n + ' · ' + Math.round(f * 100) + '% still alive';
+      cv.setAttribute('aria-label', done ? Math.round(interp(curve, n) * 100) + ' percent of mosquitoes survive the ' + n + '-day incubation period.' : 'Day ' + Math.floor(t) + ' of ' + n + ': ' + Math.round(f * 100) + ' percent alive.');
+    }
+    var ctl = wire(root, {canvas: cv, state: S, draw: draw, resize: resize, secs: function () { return 6.5; }, setModel: function (m) { model = m; build(); }});
+    days.addEventListener('input', function () { n = Number(days.value); dout.textContent = n + ' days'; build(); if (reduce) { S.t = S.max; draw(); } else ctl.play(); });
+    build(); resize(); ctl.label(); draw();
+  });
+})();
+
+
+// ---- About tab: hover (or focus) a symbol in the equations for its meaning; click to open its assumption card ----
+$(function () {
+  var body = document.getElementById('eq_body'); if (!body) return;
+  var DEF = {
+    x: ['age in days'], m: ['mosquito density per person', 'm_dens'], a: ['biting rate: bites on humans per mosquito per day', 'a_bite'], c: ['vector competence', 'vec_comp'],
+    n: ['extrinsic incubation period, in days', 'n_eip'], r: ['population growth rate', 'growth_r'], 'σ': ['age at first bite', 'first_bite'],
+    p: ['daily survival probability'], 'μ': ['daily mortality hazard at this age'], l: ['survivorship: the fraction of mosquitoes still alive at this age'],
+    e: ['expected days of life left at this age'], w: ['the share of the population at this age (stable age distribution)'], C: ['vectorial capacity'],
+    N: ['the number of trials'], 'θ': ['one set of drawn values for every assumption'], f: ['the model: assumptions in, Ct out'], i: ['index of a trial'], k: ['a day of age (summing over ages)']
+  };
+  var MORT = {a: ['initial mortality hazard', 'mort_a'], b: ['rate of ageing (how fast the hazard grows with age)', 'mort_b'], s: ['deceleration of the hazard in the logistic model', 'mort_s']};
+  function section(el) {                                    // which numbered paragraph ("2. Age-specific mortality") this symbol belongs to
+    var pad = body.querySelector('.eq-pad') || body, node = el; while (node && node.parentNode !== pad) node = node.parentNode;
+    var top = node || el;
+    for (var n = top; n; n = n.previousElementSibling) { var m = (n.tagName === 'P' ? n.textContent : '').match(/^\s*(\d+)\./); if (m) return Number(m[1]); }
+    return 0;
+  }
+  function lookup(el) {
+    var sym = el.textContent.trim(); if (!sym) return null;
+    if (el.closest('sub, sup') && sym.length > 1) return null;
+    if ((sym === 'a' || sym === 'b' || sym === 's') && section(el) === 2) return MORT[sym];
+    return DEF[sym] || null;
+  }
+  var tip = document.createElement('div'); tip.className = 'eq-tip'; tip.setAttribute('role', 'tooltip'); document.body.appendChild(tip);
+  function show(el) {
+    var d = lookup(el); if (!d) return hide();
+    tip.innerHTML = '<strong>' + el.textContent.trim() + '</strong> ' + d[0] + (d[1] ? '<div class="eq-tip-go">Click to open its assumption card</div>' : '');
+    tip.classList.add('on'); var r = el.getBoundingClientRect(), tw = tip.offsetWidth, th = tip.offsetHeight;
+    tip.style.left = Math.max(8, Math.min(window.innerWidth - tw - 8, r.left + r.width / 2 - tw / 2)) + 'px';
+    tip.style.top = (r.top - th - 8 < 8 ? r.bottom + 8 : r.top - th - 8) + 'px';
+  }
+  function hide() { tip.classList.remove('on'); }
+  $(body).on('mouseenter', 'i', function () { show(this); }).on('mouseleave', 'i', hide);
+  $(body).on('focusin', 'i', function () { show(this); }).on('focusout', 'i', hide);
+  $(body).on('click keydown', 'i', function (e) {
+    if (e.type === 'keydown' && e.key !== 'Enter' && e.key !== ' ') return;
+    var d = lookup(this); if (!d || !d[1]) return; e.preventDefault(); hide();
+    var b = $('<button type="button" class="src-link" data-card="' + d[1] + '" style="display:none"></button>').appendTo(document.body); b.trigger('click'); b.remove();
+  });
+  function mark() { $(body).find('i').each(function () { var d = lookup(this); $(this).toggleClass('eq-sym', !!d).attr({tabindex: d && d[1] ? 0 : null, role: d && d[1] ? 'button' : null}); }); }
+  mark(); $('#eq_toggle').on('click', function () { setTimeout(mark, 50); });
+});
