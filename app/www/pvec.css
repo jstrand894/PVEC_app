@@ -1604,3 +1604,30 @@
 
     /* "Quick overview" card: the clock beside its title */
     .read-clock { color: var(--accent); margin-right: 2px; }
+
+/* Flag as uncertain (inside a fixed card) and the roles list of the two-dimensional analysis */
+.flag-unc { display: flex; align-items: flex-end; gap: 8px; margin: 4px 0 8px; }
+.flag-unc .form-group { margin-bottom: 0; flex: 0 0 120px; }
+.twod-roles { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 0 14px; margin: 8px 0; }
+.twod-roles .form-group { margin-bottom: 8px; }
+
+/* Trials, auto trials and seed sit together in their own box, apart from the model choices above and the temperature section below */
+.run-box { border: 1px solid var(--line-strong); background: var(--surface-2); border-radius: 8px; padding: 10px 12px 4px; margin: 10px 0; }
+.run-box-title { font-size: 13px; font-weight: 700; }
+.run-box-sub { font-size: 12px; color: var(--muted); margin: 1px 0 6px; }
+.run-box-note { font-size: 12px; color: var(--muted); margin: -2px 0 8px; }
+.run-box .checkbox { margin: 4px 0 8px; }
+.run-box .form-group { margin-bottom: 8px; }
+
+/* Auto trials: the Trials field and the precision field share one cell and cross-fade; the note under them slides open */
+.swap-cell { display: grid; }
+.swap-cell > .swap-a, .swap-cell > .swap-b { grid-area: 1 / 1; transition: opacity var(--dur, .25s) ease, visibility 0s linear 0s; }
+.swap-cell > .swap-b { opacity: 0; visibility: hidden; transition: opacity var(--dur, .25s) ease, visibility 0s linear var(--dur, .25s); }
+.run-box.auto .swap-a { opacity: 0; visibility: hidden; transition: opacity var(--dur, .25s) ease, visibility 0s linear var(--dur, .25s); }
+.run-box.auto .swap-b { opacity: 1; visibility: visible; transition: opacity var(--dur, .25s) ease var(--dur-fast, .08s), visibility 0s; }
+.run-box-note-wrap { display: grid; grid-template-rows: 0fr; transition: grid-template-rows var(--dur, .25s) cubic-bezier(.4,0,.2,1); }
+.run-box.auto .run-box-note-wrap { grid-template-rows: 1fr; }
+.run-box-note-in { overflow: hidden; min-height: 0; }
+.run-box-note { opacity: 0; transition: opacity var(--dur, .25s) ease; }
+.run-box.auto .run-box-note { opacity: 1; transition-delay: var(--dur-fast, .08s); }
+@media (prefers-reduced-motion: reduce) { .swap-cell > *, .run-box-note-wrap, .run-box-note { transition: none !important; } }

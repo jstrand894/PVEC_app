@@ -1,4 +1,6 @@
 library(shiny)
+
+`%||%` <- function(a, b) if (is.null(a)) b else a
  
 # Shown in the page footer; update when you publish a new version
 LAST_UPDATED <- "October 4, 2026"
@@ -78,11 +80,14 @@ life_table <- function(u) {
   list(u = u, px = exp(-u), lx = lx, ex = Tx / lx - 0.5)
 }
 
+# Value of a per-age vector v (index 1 is age 0) at a possibly fractional age, read between the two nearest whole days
+at_age <- function(v, age) { a0 <- floor(age); f <- age - a0; (1 - f) * v[a0 + 1] + f * v[a0 + 2] }
+
 age_specific_vc <- function(lt, n, MA2, vec_comp = 1) {
   x    <- 0:(N_CLASS - 1)
   L    <- c(0, cumsum(-lt$u))
-  surv <- exp(L[x + n + 1] - L[x + 1])
-  Cx   <- MA2 * surv * lt$ex[x + n + 1] * vec_comp
+  surv <- exp(at_age(L, x + n) - L[x + 1])
+  Cx   <- MA2 * surv * at_age(lt$ex, x + n) * vec_comp
   Cx[!is.finite(Cx)] <- 0
   Cx
 }
@@ -338,6 +343,27 @@ qdraw <- function(u, s) {
                           meanlog, sdlog) })
 }
 
+# The mean of an assumption's distribution (the value itself when fixed). Truncated Normal and Lognormal have no closed form
+# here, so their mean is taken from evenly spaced quantiles.
+spec_mean <- function(s) {
+  switch(s$dist,
+    Fixed      = s$value,
+    Uniform    = (s$min + s$max) / 2,
+    Triangular = (s$min + s$mode + s$max) / 3,
+    PERT       = (s$min + 4 * s$mode + s$max) / 6,
+    Beta       = s$min + (s$max - s$min) * s$shape1 / (s$shape1 + s$shape2),
+    mean(qdraw(ppoints(4000), s)))
+}
+
+# The default Point values preset: each assumption fixed at the mean of its default Uncertain ranges distribution, so switching
+# between the two presets changes the spread of the forecast and little else. (The Styer et al. values in vc_specs and
+# mort_specs stay as they are: the Model check and the paper comparison use them.)
+point_default <- function(s, id) {
+  if (lit_dists[[id]] == "Fixed") { s$dist <- "Fixed"; return(s) }
+  v <- spec_mean(modifyList(s, list(dist = lit_dists[[id]])))
+  s$dist <- "Fixed"; s$value <- signif(v, 6); s
+}
+
 # Turn a reported 95% interval (and optionally a reported mean) into the parameters of a distribution.
 # `s` holds the card's current Min and Max, which are the support for Beta and the truncation for
 # Normal and Lognormal. Returns list(ok, fields, note) where `fields` are the values to put on the card.
@@ -463,8 +489,9 @@ generate_draws <- function(specs, n, pairs = NULL, uploaded = NULL) {
 # The age-specific model for a block of trials at once. Rows are trials and columns are ages 0 to
 # MAX_AGE, so each loop below runs over ages and every step works on all trials together. It does the
 # same arithmetic as hazard(), life_table(), age_specific_vc() and ct_synchronous()/ct_stable() applied
-# to one trial at a time (the tests check this). `n_eip` must be whole days between 1 and 150, and
-# `r` and `sigma` are needed only for the stable age distribution.
+# to one trial at a time (the tests check this). `n_eip` is in days between 1 and 150 and may be fractional: the
+# survival and life-expectancy terms are read between the two nearest whole days. `r` and `sigma` are needed only for the stable age distribution.
+#
 ct_batch <- function(model, a, b, s, n_eip, MA2, vec_comp, r = NULL, sigma = NULL) {
   k  <- length(a); na <- MAX_AGE + 1L
   U  <- if (model == "exponential") matrix(a, k, na) else {
@@ -482,14 +509,72 @@ ct_batch <- function(model, a, b, s, n_eip, MA2, vec_comp, r = NULL, sigma = NUL
   ex <- Tx / lx - 0.5; rm(Tx)
   x    <- 0:(N_CLASS - 1)
   rows <- rep(seq_len(k), N_CLASS)
-  at_n <- cbind(rows, rep(x, each = k) + rep(n_eip, N_CLASS) + 1L)     # the column for age x + n
-  Cx   <- MA2 * exp(H[, x + 1L] - matrix(H[at_n], k, N_CLASS)) * matrix(ex[at_n], k, N_CLASS) * vec_comp
+  n0   <- floor(n_eip); fr <- matrix(n_eip - n0, k, N_CLASS)            # whole days, and the fraction of a day past them
+  at_n <- cbind(rows, rep(x, each = k) + rep(n0, N_CLASS) + 1L)         # the column for age x + n0
+  at_1 <- at_n; at_1[, 2] <- at_1[, 2] + 1L                             # and the next day, for the fraction
+  H_n  <- (1 - fr) * matrix(H[at_n], k, N_CLASS) + fr * matrix(H[at_1], k, N_CLASS)
+  e_n  <- (1 - fr) * matrix(ex[at_n], k, N_CLASS) + fr * matrix(ex[at_1], k, N_CLASS)
+  Cx   <- MA2 * exp(H[, x + 1L] - H_n) * e_n * vec_comp
   Cx[!is.finite(Cx)] <- 0
   if (is.null(r)) return(rowMeans(Cx[, 4:7, drop = FALSE]))
   w <- lx[, seq_len(N_CLASS)] * exp(-outer(r, x))
   w <- w / rowSums(w)
   w[col(w) < round(sigma) + 1] <- 0                             # too young to have taken a first bite
   rowSums(Cx * w)
+}
+
+# Standard error of a quantile from the order statistics (no density estimate needed): the 95% confidence interval of the
+# p-th quantile runs between two order statistics found from the binomial, and its half-width is 1.96 standard errors.
+quantile_se <- function(x, p = 0.95) {
+  n <- length(x); srt <- sort(x)
+  lo <- max(qbinom(0.025, n, p), 1); hi <- min(qbinom(0.975, n, p) + 1, n)
+  (srt[hi] - srt[lo]) / (2 * 1.96)
+}
+
+# Auto trials: run a first batch, then grow the number of trials until the standard error of the 95th percentile is below
+# `tol` (a fraction of that percentile). The standard error shrinks with 1/sqrt(n), so the next size is predicted from the
+# last one rather than doubling blindly. Each size is a fresh run with the same seed, so the final result is reproducible.
+# `run_fn(n)` runs the model for n trials. Returns the last run plus the precision reached and whether the target was met.
+run_auto <- function(run_fn, tol, n0 = 1000L, n_max = MAX_TRIALS, p = 0.95, progress = function(n, met, rel) {}) {
+  n <- as.integer(n0)
+  repeat {
+    run <- run_fn(n)
+    q <- quantile(run$ct, p, names = FALSE)
+    rel <- if (q == 0) 0 else quantile_se(run$ct, p) / abs(q)
+    met <- rel <= tol
+    if (met || n >= n_max) break
+    progress(n, met, rel)
+    n <- as.integer(min(n_max, max(ceiling(n * 1.25), min(n * 4, ceiling(n * (rel / tol)^2 * 1.1)))))
+  }
+  list(run = run, n = n, rel = rel, met = met)
+}
+
+# Ct for every row of a table of draws (one row per trial). Applies the temperature what-if, keeps the incubation period
+# between 1 and 150 days, and runs the age-specific model in blocks of `chunk` rows. `ids` are the assumptions in use.
+ct_from_draws <- function(model, structure, d, ids, adjust = NULL, progress = function(done, n) {}, chunk = 250L) {
+  n <- nrow(d)
+  # A temperature what-if scales the incubation period, the initial mortality hazard and the biting rate of every trial
+  if (!is.null(adjust)) {
+    d$n_eip  <- d$n_eip  * adjust[["n_eip"]]
+    d$mort_a <- d$mort_a * adjust[["mort_a"]]
+    d$a_bite <- d$a_bite * adjust[["a_bite"]]
+  }
+  d$n_eip <- pmin(pmax(d$n_eip, 1), 150)
+  b_i <- if ("mort_b" %in% ids) d$mort_b else rep(0, n)
+  s_i <- if ("mort_s" %in% ids) d$mort_s else rep(0, n)
+  stable <- identical(structure, "stable")
+  if (stable) {
+    r_i   <- d$growth_r
+    sig_i <- pmin(pmax(round(d$first_bite), 0), N_CLASS - 1)
+  }
+  ct <- numeric(n)
+  for (from in seq(1L, n, by = chunk)) {
+    i <- from:min(from + chunk - 1L, n)
+    ct[i] <- ct_batch(model, d$mort_a[i], b_i[i], s_i[i], d$n_eip[i], d$m_dens[i] * d$a_bite[i]^2,
+                      d$vec_comp[i], if (stable) r_i[i], if (stable) sig_i[i])
+    progress(max(i), n)
+  }
+  list(ct = ct, draws = d, b = b_i, s = s_i)
 }
 
 # One simulation: draw the parameter sets, then run the age-specific model for each trial.
@@ -506,29 +591,75 @@ run_model <- function(model, structure, specs, n, seed, pairs = NULL, uploaded =
   set.seed(seed)
   g <- generate_draws(specs, n, pairs, uploaded)
   d <- g$draws
-  # A temperature what-if scales the incubation period, the initial mortality hazard and the biting rate of every trial
-  if (!is.null(adjust)) {
-    d$n_eip  <- d$n_eip  * adjust[["n_eip"]]
-    d$mort_a <- d$mort_a * adjust[["mort_a"]]
-    d$a_bite <- d$a_bite * adjust[["a_bite"]]
+  r <- ct_from_draws(model, structure, d, names(specs), adjust = adjust, progress = progress, chunk = chunk)
+  list(ct = r$ct, draws = r$draws, b = r$b, s = r$s, notes = g$notes, achieved = g$achieved)
+}
+
+# ---- Two-dimensional (second-order) Monte Carlo ----
+# Separates uncertainty (we do not know the true value of an input) from variability (the input genuinely differs between
+# mosquitoes, sites or times). Outer loop: each of `n_out` draws fixes every "uncertain" input at one plausible value.
+# Inner loop: for each outer draw, `n_in` draws of the "variable" inputs give a distribution of Ct. Each outer draw is then one
+# possible true population, and the spread across outer draws is the uncertainty about that population's Ct distribution.
+# `roles` is a named vector of "uncertain" or "variable" (fixed inputs ignore it). A link between two inputs holds only
+# when both have the same role. Returns the Ct values as a matrix with one row per outer draw.
+run_2d <- function(model, structure, specs, roles, n_out, n_in, seed, pairs = NULL, adjust = NULL,
+                   progress = function(done, n) {}, chunk = 250L) {
+  old <- if (exists(".Random.seed", envir = globalenv(), inherits = FALSE)) get(".Random.seed", envir = globalenv())
+  on.exit(if (is.null(old)) suppressWarnings(rm(".Random.seed", envir = globalenv()))
+          else assign(".Random.seed", old, envir = globalenv()), add = TRUE)
+  set.seed(seed)
+  ids  <- names(specs)
+  vary <- vapply(specs, function(s) s$dist != "Fixed", logical(1))
+  role <- ifelse(vary, roles[ids], "fixed"); role[is.na(role)] <- "uncertain"; names(role) <- ids
+  out_ids <- ids[role != "variable"]; in_ids <- ids[role == "variable"]
+  n_o <- if (any(role == "uncertain")) as.integer(n_out) else 1L
+  n_i <- if (length(in_ids)) as.integer(n_in) else 1L
+  notes <- character(0)
+  keep_pairs <- function(group) if (is.null(pairs) || !nrow(pairs)) NULL else pairs[pairs$a %in% group & pairs$b %in% group, , drop = FALSE]
+  if (!is.null(pairs) && nrow(pairs)) {
+    mixed <- pairs$a %in% ids & pairs$b %in% ids & role[pairs$a] != role[pairs$b] & role[pairs$a] != "fixed" & role[pairs$b] != "fixed"
+    if (any(mixed)) notes <- c(notes, sprintf("A link between %s and %s was dropped because one is uncertain and the other variable.",
+                                              labels[pairs$a[mixed]], labels[pairs$b[mixed]]))
   }
-  d$n_eip <- pmin(pmax(round(d$n_eip), 1), 150)
-  ids <- names(specs)
-  b_i <- if ("mort_b" %in% ids) d$mort_b else rep(0, n)
-  s_i <- if ("mort_s" %in% ids) d$mort_s else rep(0, n)
-  stable <- identical(structure, "stable")
-  if (stable) {
-    r_i   <- d$growth_r
-    sig_i <- pmin(pmax(round(d$first_bite), 0), N_CLASS - 1)
+  du <- generate_draws(specs[out_ids], n_o, keep_pairs(out_ids))$draws
+  d  <- du[rep(seq_len(n_o), each = n_i), , drop = FALSE]
+  if (length(in_ids)) d[in_ids] <- generate_draws(specs[in_ids], n_o * n_i, keep_pairs(in_ids))$draws
+  d <- d[ids]; rownames(d) <- NULL
+  r <- ct_from_draws(model, structure, d, ids, adjust = adjust, progress = progress, chunk = chunk)
+  list(ct = matrix(r$ct, n_o, n_i, byrow = TRUE), n_out = n_o, n_in = n_i, roles = role, notes = notes)
+}
+
+# Mean, median and 95th percentile of Ct within each outer draw (the variability), with the spread of each across outer
+# draws (the uncertainty): the best estimate is the median across outer draws and the interval is their 2.5th to 97.5th percentile.
+summary_2d <- function(res) {
+  ct <- res$ct
+  stats <- list("Mean Ct" = rowMeans(ct),
+                "Median Ct" = apply(ct, 1, median),
+                "95th percentile of Ct" = apply(ct, 1, quantile, probs = 0.95, names = FALSE))
+  data.frame(Measure = names(stats),
+             `Best estimate` = vapply(stats, function(x) fmt3(median(x)), ""),
+             `95% uncertainty interval` = vapply(stats, function(x) if (length(x) < 2) "no uncertainty varied"
+                                                 else paste(fmt3(quantile(x, 0.025, names = FALSE)), "to", fmt3(quantile(x, 0.975, names = FALSE))), ""),
+             check.names = FALSE, row.names = NULL)
+}
+
+# One cumulative curve per outer draw (thin lines), their 95% band, and the curve for all draws pooled (dark line)
+draw_2d <- function(res, max_lines = 60) {
+  pvec_par()
+  ct <- res$ct; xs <- seq(min(ct), max(ct), length.out = 250)
+  if (diff(range(ct)) == 0) xs <- seq(ct[1] * 0.9 - 1e-6, ct[1] * 1.1 + 1e-6, length.out = 250)
+  Fm <- t(apply(ct, 1, function(r) ecdf(r)(xs)))
+  if (nrow(ct) == 1) Fm <- matrix(Fm, nrow = 1)
+  par(mar = c(4.2, 4.4, 1, 1), las = 1)
+  plot(NA, xlim = range(xs), ylim = c(0, 1), xlab = "Ct", ylab = "Share of the population with Ct below this", bty = "l")
+  if (nrow(Fm) > 1) {
+    band <- apply(Fm, 2, quantile, probs = c(0.025, 0.975), names = FALSE)
+    polygon(c(xs, rev(xs)), c(band[1, ], rev(band[2, ])), col = adjustcolor(ACCENT, 0.18), border = NA)
+    for (i in seq_len(min(nrow(Fm), max_lines))) lines(xs, Fm[i, ], col = adjustcolor(ACCENT, 0.35), lwd = 0.8)
   }
-  ct <- numeric(n)
-  for (from in seq(1L, n, by = chunk)) {
-    i <- from:min(from + chunk - 1L, n)
-    ct[i] <- ct_batch(model, d$mort_a[i], b_i[i], s_i[i], d$n_eip[i], d$m_dens[i] * d$a_bite[i]^2,
-                      d$vec_comp[i], if (stable) r_i[i], if (stable) sig_i[i])
-    progress(max(i), n)
-  }
-  list(ct = ct, draws = d, b = b_i, s = s_i, notes = g$notes, achieved = g$achieved)
+  lines(xs, ecdf(as.vector(ct))(xs), col = .pv$fg, lwd = 2.5)
+  legend("bottomright", bty = "n", cex = 0.85, lwd = c(0.8, 2.5), col = c(adjustcolor(ACCENT, 0.6), .pv$fg),
+         legend = c("One possible true population", "All draws pooled"))
 }
 
 # Partial rank correlation coefficients (PRCC): the rank correlation between each input and the output
@@ -894,12 +1025,13 @@ summary_text <- function(ct) {
   n <- length(ct); srt <- sort(ct)
   lo <- max(qbinom(0.025, n, 0.5), 1); hi <- min(qbinom(0.975, n, 0.5) + 1, n)   # 95% interval for the median
   hw <- (srt[hi] - srt[lo]) / 2
+  hw95 <- 1.96 * quantile_se(ct, 0.95)
   list(fixed = FALSE,
        median = fmt3(q[2]),
        rest = sprintf("95%% of trials fall between %s and %s (mean %s, %s trials).",
                       fmt3(q[1]), fmt3(q[3]), fmt3(mean(ct)), format(n, big.mark = ",")),
-       precision = sprintf("Simulation precision: the median is accurate to about \u00b1%s (95%% confidence). More trials tighten this.",
-                           signif(hw, 2)))
+       precision = sprintf("Simulation precision (95%% confidence): the median is accurate to about \u00b1%s and the 95th percentile to about \u00b1%s. More trials tighten this.",
+                           signif(hw, 2), signif(hw95, 2)))
 }
 
 # One-line plain-language notes for each distribution choice
@@ -922,12 +1054,23 @@ soft_warning <- function(id, s) {
   if (id == "first_bite" && (isTRUE(lo < 0) || isTRUE(hi > N_CLASS - 1)))
     msg <- c(msg, sprintf("Ages are rounded to whole days and kept between 0 and %d.", N_CLASS - 1))
   if (id == "n_eip") {
-    if (isTRUE(lo < 1))   msg <- c(msg, "Incubation periods under 1 day are rounded up to 1.")
+    if (isTRUE(lo < 1))   msg <- c(msg, "Incubation periods under 1 day are raised to 1.")
     if (isTRUE(hi > 150)) msg <- c(msg, "Incubation periods over 150 days are capped at 150.")
   }
   if (isTRUE(s$dist %in% c("Normal", "Lognormal")) &&
       (isTRUE(s$mean < s$min) || isTRUE(s$mean > s$max)))
     msg <- c(msg, "The mean lies outside min and max, so the truncated distribution is centred elsewhere.")
+  else if (isTRUE(s$dist %in% c("Normal", "Lognormal")) && !anyNA(c(s$mean, s$sd, s$min, s$max)) &&
+           s$sd > 0 && s$min < s$max && (s$dist == "Normal" || s$mean > 0)) {
+    kept <- if (s$dist == "Normal") diff(pnorm(c(s$min, s$max), s$mean, s$sd))
+            else { sl <- sqrt(log(1 + s$sd^2 / s$mean^2)); diff(plnorm(c(s$min, s$max), log(s$mean) - sl^2 / 2, sl)) }
+    if (kept < 0.95) {
+      tm <- mean(qdraw(ppoints(2000), s))
+      msg <- c(msg, sprintf("Min and max cut off %.0f%% of the %s curve, so the shape is no longer a bell and the draws average %s, not %s. Widen min and max or lower the SD to keep it %s.",
+                            100 * (1 - kept), tolower(s$dist), signif(tm, 3), signif(s$mean, 3),
+                            if (s$dist == "Normal") "normal" else "lognormal"))
+    }
+  }
   paste(msg, collapse = " ")
 }
 
@@ -1149,8 +1292,7 @@ spark_svg <- function(sp, w = 84, h = 26) {
     return(paste0(open, sprintf('<line x1="%g" y1="%g" x2="%g" y2="%g"/></svg>', w / 2, pad, w / 2, h - pad)))
   if (identical(sp$dist, "Uniform"))
     return(paste0(open, sprintf('<path d="M%g %gL%g %gL%g %gL%g %gZ"/></svg>', pad, h - pad, pad, pad + 4, w - pad, pad + 4, w - pad, h - pad)))
-  x  <- qdraw(ppoints(400), sp)
-  dn <- density(x, from = min(x), to = max(x), adjust = 1.3, n = 60)
+  dn <- dpdf_grid(sp, 60)
   xs <- pad + (w - 2 * pad) * (dn$x - min(dn$x)) / diff(range(dn$x))
   ys <- (h - pad) - (h - 2 * pad - 2) * dn$y / max(dn$y)
   d  <- paste0("M", paste(sprintf("%.1f %.1f", xs, ys), collapse = "L"), sprintf("L%g %gL%g %gZ", w - pad, h - pad, pad, h - pad))
@@ -1161,10 +1303,33 @@ preset_table <- function() {
   ids <- c(names(vc_specs), names(mort_specs$logistic), names(pop_specs))
   base <- c(vc_specs, mort_specs$logistic, pop_specs)
   data.frame(Assumption = unname(labels[ids]),
-             `Literature preset` = vapply(ids, function(id) { sp <- base[[id]]; sp$dist <- lit_dists[[id]]; paste0(sp$dist, ": ", describe_spec(sp)) }, ""),
+             `Uncertain ranges preset` = vapply(ids, function(id) { sp <- base[[id]]; sp$dist <- lit_dists[[id]]; paste0(sp$dist, ": ", describe_spec(sp)) }, ""),
              Shape = vapply(ids, function(id) { sp <- base[[id]]; sp$dist <- lit_dists[[id]]; spark_svg(sp) }, ""),
-             `Fixed preset` = vapply(ids, function(id) { sp <- base[[id]]; sp$dist <- "Fixed"; paste0("Fixed: ", describe_spec(sp)) }, ""),
+             `Point values preset` = vapply(ids, function(id) paste0("Fixed: ", describe_spec(point_default(base[[id]], id))), ""),
              check.names = FALSE, row.names = NULL, stringsAsFactors = FALSE)
+}
+
+# Exact density of an assumption's distribution at x (zero outside min and max). The previews draw this rather than a
+# smoothed estimate of sampled values, so a triangular shows straight sides and a sharp peak.
+dpdf <- function(x, s) {
+  lo <- s$min; hi <- s$max; w <- hi - lo
+  d <- switch(s$dist,
+    Uniform    = rep(1 / w, length(x)),
+    Triangular = ifelse(x < s$mode, 2 * (x - lo) / (w * (s$mode - lo)), 2 * (hi - x) / (w * (hi - s$mode))),
+    PERT       = dbeta((x - lo) / w, 1 + 4 * (s$mode - lo) / w, 1 + 4 * (hi - s$mode) / w) / w,
+    Beta       = dbeta((x - lo) / w, s$shape1, s$shape2) / w,
+    Normal     = dnorm(x, s$mean, s$sd) / (pnorm(hi, s$mean, s$sd) - pnorm(lo, s$mean, s$sd)),
+    Lognormal  = { sdlog <- sqrt(log(1 + s$sd^2 / s$mean^2)); meanlog <- log(s$mean) - sdlog^2 / 2
+                   dlnorm(x, meanlog, sdlog) / (plnorm(hi, meanlog, sdlog) - plnorm(lo, meanlog, sdlog)) })
+  d[!is.finite(d)] <- 0
+  d[x < lo | x > hi] <- 0
+  d
+}
+
+# Points to draw an assumption's density through: a fine grid, plus the likeliest value so a triangular's peak is not clipped
+dpdf_grid <- function(s, n = 400) {
+  x <- sort(unique(c(seq(s$min, s$max, length.out = n), if (s$dist == "Triangular") s$mode)))
+  list(x = x, y = dpdf(x, s))
 }
 
 # Tiny preview of one assumption's distribution, drawn inside its card
@@ -1180,9 +1345,8 @@ preview_plot <- function(s) {
     polygon(c(s$min, s$min, s$max, s$max), c(0, 1, 1, 0),
             col = adjustcolor(ACCENT, 0.5), border = ACCENT)
   } else {
-    x  <- qdraw(ppoints(1000), s)     # evenly spaced quantiles: a stable shape, and no random numbers used
-    dn <- density(x, from = min(x), to = max(x), adjust = 1.3)
-    plot(dn$x, dn$y, type = "n", yaxt = "n", xlab = "", ylab = "", bty = "n")
+    dn <- dpdf_grid(s)                # the exact density: no sampling, so no random numbers and no smoothing
+    plot(dn$x, dn$y, type = "n", yaxt = "n", xlab = "", ylab = "", bty = "n", ylim = c(0, max(dn$y) * 1.05))
     polygon(c(dn$x[1], dn$x, tail(dn$x, 1)), c(0, dn$y, 0),
             col = adjustcolor(ACCENT, 0.5), border = ACCENT)
   }
@@ -1233,7 +1397,10 @@ assumption_ui <- function(id, s) {
       selectInput(paste0(id, "_dist"), "Distribution", dist_choices, s$dist),
       div(class = "dist-help", lapply(dist_choices, function(d)
         conditionalPanel(shows(id, d), dist_help[[d]]))),
-      conditionalPanel(shows(id, "Fixed"), num(id, "value", "Value", s)),
+      conditionalPanel(shows(id, "Fixed"), num(id, "value", "Value", s),
+        div(class = "flag-unc", title = "Not sure of the exact number? Give it a range around this value instead. You can adjust the distribution afterwards.",
+          numericInput(paste0(id, "_flag_pct"), "Unsure by \u00b1 (%)", 20, min = 1, max = 99, step = 5, width = "100%"),
+          actionButton(paste0(id, "_flag"), "Flag as uncertain", class = "btn-sm btn-default"))),
       conditionalPanel(shows(id, setdiff(dist_choices, "Fixed")),
         fluidRow(column(6, num(id, "min", "Min", s)), column(6, num(id, "max", "Max", s)))),
       conditionalPanel(shows(id, c("Triangular", "PERT")), num(id, "mode", "Likeliest", s)),
@@ -1349,9 +1516,19 @@ ui <- fluidPage(
               br(), br(),
               strong("Synchronous: "), "the population is made up entirely of young adults, spread equally over ages 3 to 6 days, and Ct averages the daily capacity over those ages."))),
         c("Stable" = "stable", "Synchronous" = "synchronous")),
-      fluidRow(
-        column(6, div(class = "trials-box", textInput("n_iter", "Trials", "1,000"))),
-        column(6, numericInput("seed", HTML(paste0("Seed ", as.character(actionLink("rand_seed", icon("shuffle"), title = "Pick a random seed")))), 1))),
+      div(class = "run-box", role = "group", `aria-labelledby` = "run_box_title",
+        div(class = "run-box-title", id = "run_box_title", "Run size"),
+        div(class = "run-box-sub", "How many trials to simulate, and the seed that makes a run repeatable."),
+        checkboxInput("auto_trials", span("Auto trials", title = "Keep adding trials until the 95th percentile of Ct is estimated precisely enough"), FALSE),
+        fluidRow(
+          # Both fields stay on the page, stacked in one cell, and cross-fade when Auto trials is switched (see pvec.js and .swap-cell)
+          column(6, div(class = "trials-box swap-cell",
+                        div(class = "swap-a", textInput("n_iter", "Trials", "1,000")),
+                        div(class = "swap-b",
+                          numericInput("auto_tol", span("Stop at SE (% of P95)", title = "Trials are added until the standard error of the 95th percentile of Ct is below this share of the percentile itself. Lower means more trials."),
+                                       1, min = 0.1, max = 20, step = 0.1)))),
+          column(6, numericInput("seed", HTML(paste0("Seed ", as.character(actionLink("rand_seed", icon("shuffle"), title = "Pick a random seed")))), 1))),
+        div(class = "run-box-note-wrap", div(class = "run-box-note-in", div(class = "run-box-note", "Stops once the standard error of the 95th percentile is below this share of its value, up to 50,000 trials.")))),
       tags$details(class = "temp-section",
         tags$summary(span(class = "temp-name", "Temperature"), span(class = "temp-optional", "optional"), span(class = "temp-badge-wrap", `aria-live` = "polite", span(class = "temp-badge", id = "temp_badge")),
           # On/off switch: the checkbox holds the state (so the server can set it), the button is what people click
@@ -1400,11 +1577,11 @@ ui <- fluidPage(
         span("Assumption presets ",
           span(class = "help-tip", tabindex = "0", role = "note", `aria-label` = "About the assumption presets", "?",
             span(class = "help-tip-text",
-              strong("Literature: "), "each assumption is drawn from a probability distribution whose range comes from published estimates. Biting rate and vector competence use Beta, incubation period and mosquito density use Uniform, and the mortality parameters use truncated Normal. Results vary from trial to trial, so the forecast shows a distribution of Ct.",
+              strong("Uncertain ranges: "), "each assumption is drawn from a probability distribution whose range comes from published estimates. Biting rate and vector competence use Beta, incubation period and mosquito density use Uniform, and the mortality parameters use truncated Normal. Results vary from trial to trial, so the forecast shows a distribution of Ct.",
               br(), br(),
-              strong("Fixed: "), "every assumption is a single value, so every trial gives the same Ct. Use it as a deterministic baseline to see how much the uncertainty changes the result. You can still change any distribution by hand."))),
-        choices = c("Literature" = "lit",
-                    "Fixed" = "fixed"),
+              strong("Point values: "), "every assumption is a single value, set to the mean of its Uncertain ranges distribution, so every trial gives the same Ct. Use it as a deterministic baseline to see how much the uncertainty changes the result. Switching presets keeps what you have entered. You can still change any distribution by hand."))),
+        choices = c("Uncertain ranges" = "lit",
+                    "Point values" = "fixed"),
         selected = "lit"),
       # Both short descriptions sit in one box whose height follows the chosen one (see pvec.js), so switching
       # presets fades the text and eases the controls below up or down instead of snapping
@@ -1552,6 +1729,7 @@ ui <- fluidPage(
               tool_tab("extreme", "arrow-up-wide-short", "Most extreme trials"),
               tool_tab("r0", "calculator", "Convert to R\u2080"),
               tool_tab("struct", "layer-group", "Other age structure"),
+              tool_tab("twod", "braille", "Uncertainty vs variability"),
               tool_tab("compare", "code-compare", "Compare to another run")),
             div(class = "tool-panels",
               tool_panel("extreme", "Most extreme trials",
@@ -1567,6 +1745,14 @@ ui <- fluidPage(
                 p(class = "tab-lead", "Runs the same parameter draws through the other population age structure, so the difference you see is the structure alone."),
                 actionButton("struct_go", "Run the other age structure", class = "btn-default btn-sm"),
                 uiOutput("struct_out", class = "smooth-h")),
+              tool_panel("twod", "Separate uncertainty from variability (two-dimensional)",
+                p(class = "tab-lead", "Some inputs are uncertain: there is one true value and we do not know it. Others are variable: they genuinely differ between mosquitoes, sites or times. Mixing the two in one cloud of trials hides which is which. Here every uncertain input is fixed at one plausible value (an outer draw), then the variable inputs are drawn many times within it (the inner draws). Each outer draw is one possible true population; the spread between them is your uncertainty about it."),
+                uiOutput("twod_roles"),
+                div(class = "plot-controls",
+                  numericInput("twod_outer", "Uncertainty draws (outer)", 100, min = 10, max = 500, step = 10, width = "190px"),
+                  numericInput("twod_inner", "Variability draws (inner)", 200, min = 10, max = 1000, step = 50, width = "190px")),
+                actionButton("twod_go", "Run the two-dimensional analysis", class = "btn-default btn-sm"),
+                uiOutput("twod_out", class = "smooth-h")),
               tool_panel("compare", "Compare to another run",
                 p(class = "tab-lead", "Pick any two of your runs, not only the latest. The first is drawn in blue and the second in orange."),
                 div(class = "plot-controls",
@@ -1821,11 +2007,13 @@ ui <- fluidPage(
             h4("Presets"),
             p("A preset sets every assumption at once. Pick one in the side panel, then change any assumption by hand."),
             tags$ul(
-              tags$li(strong("Literature. "), "Each assumption is drawn from a probability distribution whose range comes from published estimates, as described in the accompanying paper. ",
+              tags$li(strong("Uncertain ranges. "), "Each assumption is drawn from a probability distribution whose range comes from published estimates, as described in the accompanying paper. ",
                       "Biting rate and vector competence use Beta distributions, incubation period and mosquito density use Uniform, and the mortality parameters use truncated Normal distributions. ",
-                      "The growth rate and the age at first bite have no published range, so they stay fixed. Results vary from trial to trial, so the forecast shows a distribution of Ct."),
-              tags$li(strong("Fixed. "), "Every assumption is set to a single value, so every trial gives the same Ct. This is the deterministic model that the Model check tab compares with Styer et al. (2007), ",
-                      "and a baseline for seeing how much the uncertainty changes the result. The mortality values are the ones fitted by Styer et al. for the chosen mortality model, and the growth rate is solved so the exponential, stable-age case matches their published Ct.")),
+                      "The growth rate and the age at first bite have no published range, so they stay fixed. Mortality a and b start linked (rank correlation \u22120.5), because they are estimated from the same data; you can unlink them under Define assumptions. Results vary from trial to trial, so the forecast shows a distribution of Ct."),
+              tags$li(strong("Point values. "), "Every assumption is set to a single value, the mean of its Uncertain ranges distribution, so every trial gives the same Ct. ",
+                      "It is the baseline for seeing how much the uncertainty changes the result: switching between the two presets changes the spread and little else. ",
+                      "Switching keeps what you have entered, so if you have edited a range, the point value follows it, and switching back restores your distributions. ",
+                      "The Model check tab does not use this preset. It reruns the model at the values Styer et al. (2007) used (biting rate 0.75, density 1.5, competence 1, incubation 10 days), with the growth rate solved so the exponential, stable-age case matches their published Ct.")),
             how_to("Show every assumption's values",
               p(class = "preset-table-lead", "The values below are for the logistic mortality model; the exponential and Gompertz models use their own fitted mortality values."),
               div(class = "clean-table preset-table", style = "overflow-x: auto;", HTML(html_table(preset_table(), raw = "Shape"))))),
@@ -1853,7 +2041,7 @@ ui <- fluidPage(
             tags$li(strong("Literature, not local data. "), "The default ranges come from published estimates, not from field data for one place or season.",
                     "Use your own distributions if you have local data."),
             tags$li(strong("Fixed pieces. "), "Mortality follows one of three hazard forms, ages run from 0 to 199 days, and the incubation period is",
-                    "rounded to a whole day between 1 and 150. The default growth rate and age at first bite are fixed or calibrated, not measured."),
+                    "kept between 1 and 150 days (fractions of a day are allowed and read between the two nearest days). The default growth rate and age at first bite are fixed or calibrated, not measured."),
             tags$li(strong("No seasonality, space or control. "), "The model has no seasons, geography, vector control or changing populations over time."),
             tags$li(strong("Temperature is a what-if. "), "The temperature option scales the incubation period, the initial mortality hazard and the biting rate",
                     "by the chosen curves. It is a scenario to explore, not a climate projection."),
@@ -1973,7 +2161,9 @@ server <- function(input, output, session) {
 
   # ---- Correlations between assumptions ----
   empty_pairs <- function() data.frame(a = character(), b = character(), rho = numeric(), stringsAsFactors = FALSE)
-  corr_pairs <- reactiveVal(empty_pairs())
+  # Mortality a and b are estimated from the same data and move in opposite directions, so they start linked (the user can unlink them)
+  default_pairs <- function() data.frame(a = "mort_a", b = "mort_b", rho = -0.5, stringsAsFactors = FALSE)
+  corr_pairs <- reactiveVal(default_pairs())
 
   observe({   # offer only the assumptions in use for the current model and age structure
     act <- active_ids(input$mort_model, input$structure)
@@ -2087,6 +2277,9 @@ server <- function(input, output, session) {
     tr <- suppressWarnings(as.numeric(gsub(",", "", get1("trials"))))
     if (!is.na(tr) && tr >= MIN_TRIALS && tr <= MAX_TRIALS)
       updateTextInput(session, "n_iter", value = format(round(tr), big.mark = ","))
+    # Auto trials (absent in older files and links, which means off)
+    at <- toupper(get1("auto.trials")); updateCheckboxInput(session, "auto_trials", value = identical(at, "TRUE"))
+    if (!is.na(num("auto.tol"))) updateNumericInput(session, "auto_tol", value = max(0.1, min(20, num("auto.tol"))))
     # Temperature what-if (absent in older files and links, which means no change)
     cv <- get1("temp.curve"); updateRadioButtons(session, "temp_curve", selected = if (!is.na(cv) && cv %in% c("generic", names(TEMP_CURVES))) cv else "generic")
     if (!is.na(num("temp.ref"))) updateNumericInput(session, "temp_ref", value = num("temp.ref"))
@@ -2123,7 +2316,7 @@ server <- function(input, output, session) {
   # Every setting as one named character vector (the same keys as the settings file)
   settings_rows <- function() {
     rows <- list(model = input$mort_model, structure = input$structure,
-                 trials = n_trials(), seed = input$seed,
+                 trials = n_trials(), seed = input$seed, auto.trials = auto_on(), auto.tol = input$auto_tol,
                  temp = input$temp_delta, temp.on = isTRUE(input$temp_on), temp.curve = input$temp_curve, temp.ref = input$temp_ref,
                  temp.pe = input$temp_pe, temp.pm = input$temp_pm, temp.pa = input$temp_pa)
     cp <- corr_pairs()
@@ -2232,11 +2425,30 @@ server <- function(input, output, session) {
     all <- c(vc_specs, mort_specs[[input$mort_model]], pop_specs)
     for (id in names(all)) {
       s <- all[[id]]
-      s$dist <- if (preset == "lit") lit_dists[[id]] else "Fixed"
+      if (preset == "lit") s$dist <- lit_dists[[id]] else s <- point_default(s, id)
       set_spec(id, s)
     }
   }
-  observeEvent(input$preset, apply_preset(input$preset), ignoreInit = TRUE)
+  # Switching presets keeps what is on the cards. Going to Point values fixes each varying assumption at the mean of its current
+  # distribution (its ranges stay stored); going back restores each card's distribution exactly as it was.
+  saved_dist <- reactiveVal(list())
+  switch_preset <- function(preset) {
+    if (preset == "fixed") {
+      sv <- list()
+      for (id in setting_ids) {
+        s <- get_spec(id); sv[[id]] <- s$dist
+        if (!identical(s$dist, "Fixed") && is.null(check_spec(s, "")))
+          updateNumericInput(session, paste0(id, "_value"), value = signif(spec_mean(s), 6))
+        updateSelectInput(session, paste0(id, "_dist"), selected = "Fixed")
+      }
+      saved_dist(sv)
+    } else {
+      sv <- saved_dist()
+      for (id in setting_ids) updateSelectInput(session, paste0(id, "_dist"), selected = sv[[id]] %||% lit_dists[[id]])
+      saved_dist(list())
+    }
+  }
+  observeEvent(input$preset, switch_preset(input$preset), ignoreInit = TRUE)
   # Reset values to the preset applies at once; a toast offers Undo, which puts back everything as it was
   reset_snap <- reactiveVal(NULL)
   observeEvent(input$undo_reset, {
@@ -2248,6 +2460,7 @@ server <- function(input, output, session) {
     reset_snap(settings_rows())
     apply_preset(input$preset)
     updateTextInput(session, "n_iter", value = "1,000")
+    updateCheckboxInput(session, "auto_trials", value = FALSE)
     updateNumericInput(session, "temp_delta", value = 0)
     updateCheckboxInput(session, "temp_on", value = FALSE)
     toast("Values reset to the preset", "Undo", "undo_reset")
@@ -2256,8 +2469,7 @@ server <- function(input, output, session) {
   # The preset's own spec for one assumption (what "unedited" means)
   preset_spec <- function(id, model = input$mort_model, preset = input$preset) {
     sp <- c(vc_specs, mort_specs[[model]], pop_specs)[[id]]
-    sp$dist <- if (identical(preset, "lit")) lit_dists[[id]] else "Fixed"
-    sp
+    if (identical(preset, "lit")) { sp$dist <- lit_dists[[id]]; sp } else point_default(sp, id)
   }
 
   # Mark assumption cards whose values differ from the preset, and let each be reset on its own
@@ -2284,6 +2496,23 @@ server <- function(input, output, session) {
   lapply(setting_ids, function(id)
     observeEvent(input[[paste0(id, "_reset")]], set_spec(id, preset_spec(id)), ignoreInit = TRUE))
 
+  # Flag as uncertain: turn a point value into a triangular range around it (likeliest = the value)
+  lapply(setting_ids, function(id) observeEvent(input[[paste0(id, "_flag")]], {
+    v <- input[[paste0(id, "_value")]]; pct <- input[[paste0(id, "_flag_pct")]]
+    if (is.null(v) || is.na(v) || is.null(pct) || is.na(pct) || pct <= 0 || pct >= 100) {
+      notify("Enter a value and a percentage between 0 and 100.", type = "error", duration = 6); return()
+    }
+    if (v == 0) { notify(sprintf("%s is 0, so a percentage range around it has no width. Pick a distribution and enter Min and Max instead.", labels[[id]]), type = "error", duration = 8); return() }
+    lo <- v * (1 - pct / 100); hi <- v * (1 + pct / 100)
+    if (v < 0) { tmp <- lo; lo <- hi; hi <- tmp }
+    if (id == "vec_comp") { lo <- max(lo, 0); hi <- min(hi, 1) }
+    updateSelectInput(session, paste0(id, "_dist"), selected = "Triangular")
+    updateNumericInput(session, paste0(id, "_min"), value = signif(lo, 6))
+    updateNumericInput(session, paste0(id, "_mode"), value = v)
+    updateNumericInput(session, paste0(id, "_max"), value = signif(hi, 6))
+    toast(sprintf("%s flagged as uncertain: triangular from %s to %s, likeliest %s.", labels[[id]], signif(lo, 4), signif(hi, 4), signif(v, 4)))
+  }, ignoreInit = TRUE))
+
   # Fit a distribution to a reported 95% interval (and mean), then fill in the card
   lapply(setting_ids, function(id) {
     msg <- reactiveVal(NULL)
@@ -2307,6 +2536,10 @@ server <- function(input, output, session) {
     if (length(n) != 1 || is.na(n) || n < MIN_TRIALS || n > MAX_TRIALS) NA_integer_ else as.integer(round(n))
   })
 
+  # Auto trials: the target as a fraction (NA when the box is empty or outside 0.1% to 20%)
+  auto_on  <- reactive(isTRUE(input$auto_trials))
+  auto_tol <- reactive({ x <- suppressWarnings(as.numeric(input$auto_tol)); if (length(x) != 1 || is.na(x) || x < 0.1 || x > 20) NA_real_ else x / 100 })
+
   # The part of the temperature section that counts as a setting: nothing while it is off, or on the generic curve at 0 (that is
   # the same as no temperature); otherwise the change plus the settings of the chosen curve (the baseline for a published curve,
   # the percent changes for the generic one). Choosing a published curve marks the results as out of date, going back to the
@@ -2323,7 +2556,7 @@ server <- function(input, output, session) {
   cur_sig_now <- reactive({
     ids <- active_ids(input$mort_model)
     list(model = input$mort_model, structure = input$structure,
-         n = n_trials(), seed = input$seed, corr = corr_pairs(), upload = uploaded()$sig,
+         n = if (auto_on()) c(auto = auto_tol()) else n_trials(), seed = input$seed, corr = corr_pairs(), upload = uploaded()$sig,
          temp = temp_sig(),
          specs = lapply(setNames(ids, ids), get_spec))
   })
@@ -2355,13 +2588,23 @@ server <- function(input, output, session) {
   output$run_status_print <- renderText(run_info())
   outputOptions(output, "run_status_print", suspendWhenHidden = FALSE)   # hidden on screen, needed when printing
 
+  # The default mortality link is dropped without a note when it cannot apply (an end is fixed, or b is not in the model)
+  usable_pairs <- function(specs) {
+    cp <- corr_pairs()
+    isab <- (cp$a == "mort_a" & cp$b == "mort_b") | (cp$a == "mort_b" & cp$b == "mort_a")
+    vary <- function(id) id %in% names(specs) && !identical(specs[[id]]$dist, "Fixed")
+    cp[!isab | (vary("mort_a") & vary("mort_b")), , drop = FALSE]
+  }
+
   observeEvent(input$run, {
     model <- input$mort_model
     ids   <- active_ids(model)
     specs <- lapply(ids, get_spec)
     names(specs) <- ids
     problems <- unlist(Map(check_spec, specs, labels[ids]))
-    if (is.na(n_trials()))
+    if (auto_on()) {
+      if (is.na(auto_tol())) problems <- c(problems, "Enter an auto-trials precision between 0.1 and 20 (% of the 95th percentile)")
+    } else if (is.na(n_trials()))
       problems <- c(problems, sprintf("Enter a number of trials between %s and %s", MIN_TRIALS, format(MAX_TRIALS, big.mark = ",")))
     if (!is.null(problems)) {
       notify(paste(problems, collapse = ". "), type = "error", duration = 8)
@@ -2375,9 +2618,21 @@ server <- function(input, output, session) {
     dT <- if (!isTRUE(input$temp_on) || is.null(input$temp_delta) || is.na(input$temp_delta)) 0 else input$temp_delta
     tadj <- temperature_adjust(input$temp_curve, input$temp_ref, dT, input$temp_pe, input$temp_pm, input$temp_pa)
     adj <- if (!is.null(tadj)) tadj$mult
-    run <- withProgress(message = "Running trials", value = 0,
-      run_model(model, input$structure, specs, n, input$seed, pairs = corr_pairs(), uploaded = uploaded(),
-                progress = function(i, n) setProgress(i / n, detail = sprintf("%d of %d", i, n)), adjust = adj))
+    auto <- NULL
+    run_n <- function(n_now, label = "Running trials")
+      run_model(model, input$structure, specs, n_now, input$seed, pairs = usable_pairs(specs), uploaded = uploaded(),
+                progress = function(i, n) setProgress(i / n, message = label, detail = sprintf("%d of %d", i, n)), adjust = adj)
+    run <- withProgress(message = "Running trials", value = 0, {
+      if (auto_on()) {
+        auto <- run_auto(function(n_now) run_n(n_now, "Running trials (auto)"), auto_tol())
+        auto$run
+      } else run_n(n)
+    })
+    if (!is.null(auto)) {
+      n <- auto$n
+      if (!auto$met) notify(sprintf("Reached the %s-trial limit with the 95th percentile still at %.1f%% standard error, above your %.1f%% target.",
+                                    format(MAX_TRIALS, big.mark = ","), 100 * auto$rel, 100 * auto_tol()), type = "warning", duration = 10)
+    }
     d <- run$draws; ct <- run$ct; b_i <- run$b; s_i <- run$s
 
     settings <- c(
@@ -2385,7 +2640,9 @@ server <- function(input, output, session) {
       sprintf("Run time: %s", format(Sys.time(), "%Y-%m-%d %H:%M:%S")),
       sprintf("Mortality model: %s", model),
       sprintf("Population age structure: %s", input$structure),
-      sprintf("Trials: %d", n),
+      if (is.null(auto)) sprintf("Trials: %d", n)
+      else sprintf("Trials: %d (auto: standard error of the 95th percentile is %.2f%% of it, target %.2f%%%s)", n, 100 * auto$rel, 100 * auto_tol(),
+                   if (auto$met) "" else ", not reached at the trial limit"),
       sprintf("Random seed: %s", input$seed),
       if (!is.null(adj)) sprintf("Temperature what-if: %+g degrees C%s (incubation period x%.2f, initial mortality a x%.2f, biting rate x%.2f)",
                                  dT, if (input$temp_curve %in% names(TEMP_CURVES)) sprintf(" from %s C, %s", format(input$temp_ref), TEMP_CURVES[[input$temp_curve]]$label) else "",
@@ -2405,7 +2662,7 @@ server <- function(input, output, session) {
                                   input$structure, format(n, big.mark = ","), signif(median(ct), 3)))
     history(c(tail(history(), 39), list(entry)))
     results_val(list(ct = ct, draws = d, model = model, b = b_i, s = s_i,
-                     settings = settings, run = new_run,
+                     settings = settings, run = new_run, adj = adj,
                      structure = input$structure, n = n, seed = input$seed, snapshot = snap, temp = dT))
     run_sig(cur_sig_now())
     run_specs(specs)
@@ -2424,48 +2681,35 @@ server <- function(input, output, session) {
 
   }, ignoreNULL = FALSE)
 
-  # ---- Suggest linking mortality a and b, which are usually estimated together ----
-  ab_dismissed <- reactiveVal(FALSE)
-  ab_linked    <- reactiveVal(FALSE)       # set by the button, so the card can show that it worked
+  # ---- Mortality a and b start linked; this card says so and lets the user unlink (or relink) them ----
   ab_pair <- function(cp) any((cp$a == "mort_a" & cp$b == "mort_b") | (cp$a == "mort_b" & cp$b == "mort_a"))
   output$ab_hint <- renderUI({
     if (identical(input$mort_model, "exponential")) return(NULL)
-    done <- ab_linked() && ab_pair(corr_pairs())
-    if (!done && ab_dismissed()) return(NULL)
     va <- input$mort_a_dist; vb <- input$mort_b_dist
-    if (is.null(va) || is.null(vb) || va == "Fixed" || vb == "Fixed" || (!done && ab_pair(corr_pairs()))) return(NULL)
+    if (is.null(va) || is.null(vb) || va == "Fixed" || vb == "Fixed") return(NULL)
+    cp <- corr_pairs(); linked <- ab_pair(cp)
+    rho <- if (linked) cp$rho[(cp$a == "mort_a" & cp$b == "mort_b") | (cp$a == "mort_b" & cp$b == "mort_a")][1]
     div(class = "hint-card", role = "note",
-        span(class = "hint-icon", `aria-hidden` = "true", icon("link")),
+        span(class = "hint-icon", `aria-hidden` = "true", icon(if (linked) "link" else "link-slash")),
         div(class = "hint-body",
-            p(strong("Mortality a and b are currently drawn independently."), " They are usually estimated from the same data, and in published fits they tend to move in opposite directions: ",
-              "a higher starting hazard goes with a slower rate of ageing. Drawing them independently can make the forecast look wider or narrower than the data support."),
-            if (done)
-              div(class = "hint-actions", role = "status",
-                  actionButton("ab_undo", class = "btn-default btn-sm hint-done", label = tagList(
-                    span(class = "hint-size", `aria-hidden` = "true", "Link them (\u03c1 = \u22120.5)"),     # holds the button at its original size
-                    span(class = "hint-lbl hint-lbl-linked",
-                         HTML('<svg class="scen-check" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="10"/><path d="M7 12.5l3.2 3.2L17 8.8"/></svg>'),
-                         "Linked"),
-                    span(class = "hint-lbl hint-lbl-undo", icon("rotate-left"), "Undo"))),
-                  span(class = "hint-small", "\u03c1 = \u22120.5. Click Run to use it."),
-                  tags$a(href = "#", class = "hint-goto", "Go to Linking assumptions \u2192"))
+            if (linked)
+              p(strong(sprintf("Mortality a and b are linked (\u03c1 = %s).", format(rho))), " They are estimated from the same data, and in published fits they move in opposite directions: ",
+                "a higher starting hazard goes with a slower rate of ageing. Linking them keeps the forecast from looking wider or narrower than the data support. You can change the strength under Linking assumptions.")
             else
-              div(class = "hint-actions",
-                  actionButton("ab_link", "Link them (\u03c1 = \u22120.5)", class = "btn-default btn-sm"),
-                  actionButton("ab_dismiss", "Not now", class = "btn-link btn-sm"),
-                  span(class = "hint-small", "\u22120.5 is a moderate starting point. You can edit it under Linking assumptions."))))
+              p(strong("Mortality a and b are drawn independently."), " They are usually estimated from the same data and tend to move in opposite directions, ",
+                "so drawing them independently can make the forecast look wider or narrower than the data support."),
+            div(class = "hint-actions",
+                if (linked) actionButton("ab_unlink", "Unlink them", class = "btn-default btn-sm")
+                else actionButton("ab_link", "Link them (\u03c1 = \u22120.5)", class = "btn-default btn-sm"),
+                span(class = "hint-small", "Click Run to use the change."))))
   })
   observeEvent(input$ab_link, {
-    cp <- corr_pairs()
-    corr_pairs(rbind(cp, data.frame(a = "mort_a", b = "mort_b", rho = -0.5, stringsAsFactors = FALSE)))
-    ab_linked(TRUE)
+    corr_pairs(rbind(corr_pairs(), default_pairs()))
   })
-  observeEvent(input$ab_undo, {
+  observeEvent(input$ab_unlink, {
     cp <- corr_pairs()
     corr_pairs(cp[!((cp$a == "mort_a" & cp$b == "mort_b") | (cp$a == "mort_b" & cp$b == "mort_a")), , drop = FALSE])
-    ab_linked(FALSE)
   })
-  observeEvent(input$ab_dismiss, ab_dismissed(TRUE))
 
   # ---- Temperature what-if: the badge on the section header and the size of the effect ----
   observeEvent(input$temp_curve, {
@@ -2772,6 +3016,50 @@ server <- function(input, output, session) {
             p(class = "tab-lead", sprintf("The median Ct under synchronous emergence is %s times the median under the stable age distribution for these draws.", fmt3(ratio))))
   })
 
+  # ---- Two-dimensional analysis: which inputs are uncertain and which are variable ----
+  # Mortality defaults to variable: the spread in the published fits is between cohorts, which is variability. Everything else
+  # defaults to uncertain, because the published ranges describe what is not known about a value.
+  default_role <- function(id) if (id %in% c("mort_a", "mort_b", "mort_s")) "variable" else "uncertain"
+  output$twod_roles <- renderUI({
+    specs <- run_specs(); req(specs)
+    ids <- names(specs)[vapply(specs, function(s) !identical(s$dist, "Fixed"), logical(1))]
+    if (!length(ids)) return(helpText("Every assumption is fixed, so there is nothing to separate. Give at least one a distribution."))
+    div(class = "twod-roles",
+      lapply(ids, function(id) selectInput(paste0("role_", id), labels[[id]],
+        c("Uncertain (one true value, not known)" = "uncertain", "Variable (differs between mosquitoes, sites or times)" = "variable"),
+        selected = isolate(input[[paste0("role_", id)]]) %||% default_role(id), width = "100%")))
+  })
+  twod_res <- reactiveVal(NULL)
+  observeEvent(results(), twod_res(NULL), ignoreInit = TRUE)
+  observeEvent(input$twod_go, {
+    res <- results(); specs <- run_specs(); req(specs)
+    n_o <- suppressWarnings(as.integer(input$twod_outer)); n_i <- suppressWarnings(as.integer(input$twod_inner))
+    if (anyNA(c(n_o, n_i)) || n_o < 10 || n_i < 10 || n_o > 500 || n_i > 1000 || n_o * n_i > 50000) {
+      notify("Use at least 10 draws in each loop, at most 500 outer and 1,000 inner draws, and at most 50,000 in total.", type = "error", duration = 8)
+      return()
+    }
+    roles <- vapply(names(specs), function(id) input[[paste0("role_", id)]] %||% default_role(id), "")
+    r2 <- withProgress(message = "Running the two-dimensional analysis", value = 0,
+      run_2d(res$model, res$structure, specs, roles, n_o, n_i, res$seed, pairs = usable_pairs(specs), adjust = res$adj,
+             progress = function(i, n) setProgress(i / n, detail = sprintf("%d of %d", i, n))))
+    twod_res(list(r = r2, run = res$run))
+  })
+  output$twod_out <- renderUI({
+    tr <- twod_res(); req(tr); r2 <- tr$r
+    shape <- if (r2$n_out == 1) "Every varying input was marked variable, so there is no outer loop and no uncertainty interval: this is the same kind of spread as the main forecast."
+             else if (r2$n_in == 1) "Every varying input was marked uncertain, so there is no inner loop: each row is one possible true value of Ct, and there is no variability."
+             else sprintf("%s uncertainty draws, each with %s variability draws.", format(r2$n_out, big.mark = ","), format(r2$n_in, big.mark = ","))
+    tagList(
+      helpText(shape),
+      plotOutput("twod_plot", height = 340),
+      div(class = "compare-table", HTML(html_table(summary_2d(r2)))),
+      helpText("Best estimate is the middle of the outer draws. The interval covers 95% of them: it is how unsure we are about that measure, once variability is accounted for.",
+               if (length(r2$notes)) paste(r2$notes, collapse = " ")))
+  })
+  output$twod_plot <- renderPlot({
+    tr <- twod_res(); req(tr); draw_2d(tr$r)
+  }, alt = "Cumulative curves of Ct. Each thin line is one possible true population, the shaded band covers 95% of them, and the dark line pools all draws.")
+
   txt_forecast <- reactive({
     ct <- results()$ct
     if (diff(range(ct)) == 0)
@@ -2837,7 +3125,7 @@ server <- function(input, output, session) {
   txt_surv <- reactive({
     res <- results(); lts <- surv_lts(); k <- seq_along(lts)
     ls <- surv_life(); ls <- ls[!is.na(ls)]
-    alive <- median(vapply(k, function(i) lts[[i]]$lx[res$draws$n_eip[i] + 1], 0)); ne <- median(res$draws$n_eip[k])
+    alive <- median(vapply(k, function(i) at_age(lts[[i]]$lx, res$draws$n_eip[i]), 0)); ne <- median(res$draws$n_eip[k])
     verdict <- if (alive >= 0.9) sprintf("Nearly all mosquitoes outlive the %s-day incubation period, so survival is rarely what limits transmission here.", fmt3(ne))
                else if (alive >= 0.5) sprintf("A sizeable share of mosquitoes die within the %s-day incubation period, so survival limits transmission to some extent.", fmt3(ne))
                else sprintf("Most mosquitoes die within the %s-day incubation period, so survival strongly limits transmission.", fmt3(ne))
@@ -3010,7 +3298,8 @@ server <- function(input, output, session) {
   # Wait for the values to settle: a preset or model change updates every field one by one, and checking
   # in between would flag cards whose new minimum is briefly above their old maximum
   val_inputs <- debounce(reactive(list(
-    model = input$mort_model, trials = n_trials(), specs = lapply(setNames(setting_ids, setting_ids), get_spec))), 500)
+    model = input$mort_model, trials = if (auto_on()) MIN_TRIALS else n_trials(), auto = auto_on(), tol = auto_tol(),
+    specs = lapply(setNames(setting_ids, setting_ids), get_spec))), 500)
   last_issues <- reactiveVal(NULL)
   observe({
     vi <- val_inputs()
@@ -3029,6 +3318,8 @@ server <- function(input, output, session) {
     if (is.na(vi$trials))
       issues <- c(issues, list(list(id = "n_iter", kind = "field", label = "Trials",
                                     msg = sprintf("enter a number between %s and %s", MIN_TRIALS, format(MAX_TRIALS, big.mark = ",")))))
+    if (isTRUE(vi$auto) && is.na(vi$tol))
+      issues <- c(issues, list(list(id = "auto_tol", kind = "field", label = "Auto trials", msg = "enter a precision between 0.1 and 20 (% of the 95th percentile)")))
     if (!identical(issues, isolate(last_issues()))) {
       last_issues(issues)
       session$sendCustomMessage("runIssues", list(items = unname(issues)))
@@ -3251,7 +3542,7 @@ server <- function(input, output, session) {
     res <- results(); lts <- surv_lts(); k <- seq_along(lts)
     half  <- vapply(lts, function(lt) { i <- which(lt$lx < 0.5)[1]; if (is.na(i)) NA_real_ else i - 1 }, 0)
     ex0   <- vapply(lts, function(lt) lt$ex[1], 0)
-    alive <- vapply(k, function(i) lts[[i]]$lx[res$draws$n_eip[i] + 1], 0)
+    alive <- vapply(k, function(i) at_age(lts[[i]]$lx, res$draws$n_eip[i]), 0)
     ne    <- median(res$draws$n_eip[k])
     tile  <- function(label, value, sub, lead = FALSE)
       div(class = paste("stat-tile", if (lead) "is-lead"), div(class = "tile-label", label),
