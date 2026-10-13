@@ -2333,3 +2333,12 @@ $(function () {
   function mark() { $(body).find('i').each(function () { var d = lookup(this); $(this).toggleClass('eq-sym', !!d).attr({tabindex: d && d[1] ? 0 : null, role: d && d[1] ? 'button' : null}); }); }
   mark(); $('#eq_toggle').on('click', function () { setTimeout(mark, 50); });
 });
+
+// Auto trials: mark the Run size box so the CSS cross-fades between the Trials field and the precision field.
+// Listening to Shiny's input event covers clicks as well as settings files and resets that set the box from the server.
+(function () {
+  function mark(on) { $('.run-box').toggleClass('auto', !!on); }
+  $(document).on('shiny:inputchanged', function (e) { if (e.name === 'auto_trials') mark(e.value); });
+  $(document).on('shiny:connected', function () { mark($('#auto_trials').prop('checked')); });
+  $(document).on('change', '#auto_trials', function () { mark(this.checked); });
+})();

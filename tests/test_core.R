@@ -34,12 +34,12 @@ for (mod in c("exponential", "gompertz", "logistic")) for (st in c("synchronous"
   spc <- mk_specs(mod, st, "lit")
   if (st == "stable") for (id in names(pop_specs)) { spc[[id]]$dist <- "Uniform" }
   rr <- run_model(mod, st, spc, 300, 4, chunk = 70)                        # 70 does not divide 300: uneven last block
-  d <- rr$draws; d$n_eip <- pmin(pmax(round(d$n_eip), 1), 150)
+  d <- rr$draws
   check(max(abs(rr$ct / scalar_ct(mod, st, d, rr$b, rr$s) - 1)) < 1e-9, sprintf("block model equals the one-trial-at-a-time model (%s, %s)", mod, st))
 }
 wide <- mk_specs("logistic", "stable", "lit")                             # extreme ranges: hazards that overflow exp()
 wide$mort_b$dist <- "Uniform"; wide$mort_b$min <- 0.5; wide$mort_b$max <- 3; wide$n_eip$min <- 1; wide$n_eip$max <- 150
-rw <- run_model("logistic", "stable", wide, 100, 2); dw <- rw$draws; dw$n_eip <- pmin(pmax(round(dw$n_eip), 1), 150)
+rw <- run_model("logistic", "stable", wide, 100, 2); dw <- rw$draws
 check(all(is.finite(rw$ct)) && max(abs(rw$ct / scalar_ct("logistic", "stable", dw, rw$b, rw$s) - 1)) < 1e-9, "block model handles hazards that overflow, like the one-trial model")
 check(identical(run_model("gompertz", "stable", mk_specs("gompertz", "stable", "lit"), 700, 5, chunk = 50)$ct,
                 run_model("gompertz", "stable", mk_specs("gompertz", "stable", "lit"), 700, 5, chunk = 700)$ct), "block size does not change the result")
@@ -217,6 +217,57 @@ hot <- curve_multipliers("aedes_dengue", 27, 8)
 check(setequal(hot$outside, c("n", "mu", "a")) || all(c("mu", "a") %in% hot$outside), "going past the fitted range is flagged")
 check(is.null(temperature_adjust("generic", NULL, 0, -10, 5, 3)) && !is.null(temperature_adjust("generic", NULL, 2, -10, 5, 3)) &&
       identical(temperature_adjust("generic", NULL, 2, -10, 5, 3)$mult, temp_multipliers(2, -10, 5, 3)), "the generic temperature option uses the per-degree changes and no change at 0")
+
+# --- Fractional incubation period, exact previews, auto trials ----------------------------------------------
+sf <- mk_specs("logistic", "synchronous", "fixed")
+ctn <- function(n) { z <- sf; z$n_eip$value <- n; run_model("logistic", "synchronous", z, 10, 1)$ct[1] }
+check(ctn(9) > ctn(9.5) && ctn(9.5) > ctn(10) && abs(ctn(9.5) - (ctn(9) + ctn(10)) / 2) / ctn(9.5) < 0.02,
+      "a fractional incubation period gives a Ct between its neighbouring whole days")
+check(abs(ctn(10) - run_model("logistic", "synchronous", sf, 10, 1)$ct[1]) < 1e-12, "a whole-day incubation period is unchanged")
+tri <- list(dist = "Triangular", min = 0, mode = 0.2, max = 1); g <- dpdf_grid(tri, 2000)
+check(abs(sum(diff(g$x) * (head(g$y, -1) + tail(g$y, -1)) / 2) - 1) < 1e-3 && max(g$y) == 2 / (tri$max - tri$min) && g$y[which(g$x == 0.2)] == 2,
+      "the triangular preview is the exact density, with a sharp peak at the likeliest value")
+set.seed(3); x <- rnorm(20000)
+check(abs(quantile_se(x, 0.95) / sqrt(0.95 * 0.05 / 20000) * dnorm(qnorm(0.95)) - 1) < 0.25, "the standard error of a quantile agrees with the large-sample formula")
+au <- run_auto(function(n) run_model("logistic", "stable", mk_specs("logistic", "stable", "lit"), n, 11), 0.01)
+check(au$met && au$rel <= 0.01 && au$n == length(au$run$ct) && au$n > 1000, "auto trials grows the run until the 95th percentile is precise enough")
+au2 <- run_auto(function(n) run_model("logistic", "stable", mk_specs("logistic", "stable", "lit"), n, 11), 1e-6, n_max = 3000)
+check(!au2$met && au2$n == 3000, "auto trials stops at the trial limit and reports that the target was not met")
+au3 <- run_auto(function(n) run_model("logistic", "stable", mk_specs("logistic", "stable", "fixed"), n, 11), 0.01)
+check(au3$met && au3$n == 1000, "auto trials stops at once when every assumption is fixed")
+
+# --- Two-dimensional analysis ---------------------------------------------------------------------------------
+sp2 <- mk_specs("logistic", "stable", "lit")
+rl <- setNames(ifelse(names(sp2) %in% c("mort_a", "mort_b", "mort_s"), "variable", "uncertain"), names(sp2))
+r2 <- run_2d("logistic", "stable", sp2, rl, 20, 50, 5, pairs = data.frame(a = "mort_a", b = "mort_b", rho = -0.5))
+check(identical(dim(r2$ct), c(20L, 50L)) && all(is.finite(r2$ct)), "two-dimensional run returns one row per uncertainty draw and one column per variability draw")
+check(identical(r2$ct, run_2d("logistic", "stable", sp2, rl, 20, 50, 5, pairs = data.frame(a = "mort_a", b = "mort_b", rho = -0.5))$ct), "two-dimensional run is reproducible from the seed")
+# Uncertain inputs are constant within a row. Check by running the engine's draws indirectly: with only mortality variable,
+# a row's Ct varies; with everything uncertain each row has a single Ct.
+ru <- run_2d("logistic", "stable", sp2, setNames(rep("uncertain", length(sp2)), names(sp2)), 15, 40, 5)
+check(ru$n_in == 1L && nrow(ru$ct) == 15, "with every input uncertain there is no inner loop")
+rv <- run_2d("logistic", "stable", sp2, setNames(rep("variable", length(sp2)), names(sp2)), 15, 40, 5)
+check(rv$n_out == 1L && ncol(rv$ct) == 40, "with every input variable there is no outer loop")
+spf <- sp2; for (id in setdiff(names(spf), "vec_comp")) spf[[id]]$dist <- "Fixed"
+rr <- run_2d("logistic", "stable", spf, c(vec_comp = "uncertain"), 12, 30, 5)
+check(all(apply(rr$ct, 1, function(x) diff(range(x))) < 1e-12) && diff(range(rr$ct[, 1])) > 0, "an uncertain input is held constant within a row and differs between rows")
+rr2 <- run_2d("logistic", "stable", spf, c(vec_comp = "variable"), 12, 30, 5)
+check(all(apply(rr2$ct, 1, function(x) diff(range(x))) > 0), "a variable input changes within every row")
+sm <- summary_2d(r2)
+check(nrow(sm) == 3 && all(c("Best estimate", "95% uncertainty interval") %in% names(sm)), "two-dimensional summary has the three measures with intervals")
+mixed <- run_2d("logistic", "stable", sp2, setNames(ifelse(names(sp2) == "mort_a", "variable", "uncertain"), names(sp2)), 10, 20, 5, pairs = data.frame(a = "mort_a", b = "mort_b", rho = -0.5))
+check(length(mixed$notes) == 1, "a link between an uncertain and a variable input is dropped with a note")
+
+# --- Point values preset follows the Uncertain ranges ---------------------------------------------------------
+for (id in names(vc_specs)) {
+  pd <- point_default(vc_specs[[id]], id); ls <- vc_specs[[id]]; ls$dist <- lit_dists[[id]]
+  draws <- qdraw(ppoints(20000), ls)
+  check(pd$dist == "Fixed" && abs(pd$value - mean(draws)) / mean(draws) < 5e-3, sprintf("point value for %s is the mean of its uncertain-ranges distribution", id))
+}
+check(point_default(pop_specs$growth_r, "growth_r")$value == pop_specs$growth_r$value, "assumptions that are fixed in both presets keep their value")
+pt <- mk_specs("logistic", "stable", "lit"); for (id in names(pt)) pt[[id]] <- point_default(pt[[id]], id)
+uc <- run_model("logistic", "stable", mk_specs("logistic", "stable", "lit"), 4000, 3)$ct
+check(abs(run_model("logistic", "stable", pt, 5, 1)$ct[1] / median(uc) - 1) < 0.1, "the Point values Ct is close to the median of the Uncertain ranges Ct")
 
 if (!all(unlist(results))) stop(sprintf("%d check(s) failed", sum(!unlist(results))), call. = FALSE)
 cat(sprintf("\nAll %d checks passed.\n", length(results)))

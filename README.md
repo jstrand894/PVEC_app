@@ -39,14 +39,19 @@ enter leaves your computer. The first load can take 10 to 30 seconds while R sta
 - Set each assumption to a fixed value or a distribution (uniform, triangular, PERT, beta, normal or
   lognormal), with a live preview of its shape. Assumptions are compact cards that open in place, and a jump bar
   moves between sections.
-- Start from literature-based distributions or from fixed point estimates, and see which cards you have changed
-  from the preset (with a reset link on each).
+- Start from the **Uncertain ranges** preset (literature-based distributions) or the **Point values** preset, and see
+  which cards you have changed from the preset (with a reset link on each). On a fixed card, **Flag as uncertain**
+  turns the value into a triangular range of ±X% around it.
 - Record where each assumption comes from in its **Source** box, and use **Fit from a reported range** to turn a
   published 95% interval (and mean, if given) into the parameters of a distribution.
 - Link assumptions that move together with a rank correlation, or upload joint parameter draws (for example
-  posterior samples from a fitted model). A hint suggests linking mortality *a* and *b*, which are usually
-  estimated from the same data.
-- Run 500 to 50,000 trials (type any number, or step through the usual sizes with the arrows) with a seed.
+  posterior samples from a fitted model). Mortality *a* and *b* start linked (rank correlation −0.5) because they
+  are estimated from the same data; unlink them from the card above the assumptions.
+- Run 10 to 50,000 trials with a seed, or tick **Auto trials** to keep adding trials until the standard error of the
+  95th percentile of Ct falls below a share of that percentile you set. The incubation period can be fractional.
+- **Uncertainty vs variability** (under Dig deeper): a two-dimensional run that fixes the uncertain inputs in an outer
+  loop and draws the variable inputs in an inner loop, showing the spread of Ct curves and intervals on the mean,
+  median and 95th percentile.
 - Try a **temperature what-if**: one slider shifts the incubation period, the initial mortality hazard and the
   biting rate of every trial together. Use published curves for *Aedes aegypti* and dengue virus (Liu-Helmersson
   et al. 2014) or for *Anopheles* and *Plasmodium falciparum* (Martens 1997 mortality and the 111 degree-day
