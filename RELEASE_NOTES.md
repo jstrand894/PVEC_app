@@ -1,4 +1,4 @@
-# PVEC v1.2: Probabilistic Vectorial Capacity Simulator
+# PVEC v1.3: Probabilistic Vectorial Capacity Simulator
 
 PVEC propagates uncertainty in transmission and mosquito mortality parameters through an age-specific
 vectorial capacity model. Each assumption can be fixed or given a probability distribution. The simulation
@@ -33,6 +33,27 @@ nothing a user enters leaves their computer.
 
 ## Changes in this version
 
+- **Auto trials.** A run can grow until the standard error of the 95th percentile falls below a threshold
+  (default 1% of P95, capped at 50,000 trials). Trials, auto trials and the seed sit in a "Run size" box.
+- **Uncertainty vs variability tab.** A two-dimensional (second-order) analysis separates uncertain inputs (outer
+  loop) from variable inputs (inner loop), with a Ct curve per possible true population and a 95% band.
+- **Flag as uncertain.** A fixed card can become a triangular range of +/-X% around its value.
+- **Mortality a and b are linked by default** (rho = -0.5, a placeholder), with an Unlink button.
+- **Fractional incubation periods** are interpolated between whole days.
+- **Presets renamed** to "Uncertain ranges" and "Point values". Point values now sit at the centre of the
+  uncertain ranges, so switching presets mainly changes the spread.
+- **Age-independent mortality comparison.** A Dig deeper tool reruns the same draws with constant mortality at each trial's mean
+  lifespan, isolating the shape of the mortality curve (after Novoseltsev et al. 2012).
+- **Entropy H and lifespan.** The Survival curves tab shows demographic entropy and the rank correlation of Ct with mean
+  lifespan and with H.
+- Notes on the growth rate card, the sensitivity chart and the Limitations list: Ct can be non-monotonic in r, and the model
+  has no movement or hidden heterogeneity. Novoseltsev et al. (2012) is now cited in the references.
+- Clicking the logo opens the Define assumptions tab.
+- Distribution previews draw the exact density, and a Normal card warns when min and max truncate more than
+  5% of the bell.
+
+### Changes in 1.2
+
 - Charts draw in after a run and when a results tab is opened.
 - Results wait for the Run bar to finish, with a loading skeleton.
 - Each assumption card shows how strongly it moved Ct in the most recent run.
@@ -58,7 +79,7 @@ See the Limitations section of the About tab.
 
 ## How to cite
 
-Strand, J. R. (2026). *PVEC: Probabilistic Vectorial Capacity Simulator* (Version 1.2) [Computer software].
+Strand, J. R. (2026). *PVEC: Probabilistic Vectorial Capacity Simulator* (Version 1.3) [Computer software].
 https://jstrand894.github.io/PVEC_app/
 
 Once Zenodo assigns a DOI, add it to the citation and to `CITATION.cff`. Also cite the Styer et al. (2007)

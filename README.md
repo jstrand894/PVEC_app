@@ -22,6 +22,18 @@ The app runs entirely in your browser (R compiled to WebAssembly through
 [Shinylive](https://posit-dev.github.io/r-shinylive/)). There is no server, and nothing you
 enter leaves your computer. The first load can take 10 to 30 seconds while R starts.
 
+## What's new in version 1.3
+
+- **Auto trials.** Tick Auto trials to run until the standard error of the 95th percentile is below a threshold, instead of choosing a trial count.
+- **Uncertainty vs variability.** A new tab under Dig deeper runs a two-dimensional analysis, with a Ct curve for each possible true population.
+- **Flag as uncertain.** Turn a fixed value into a +/-X% triangular range with one click.
+- **Mortality a and b are linked by default**, with an Unlink button. Incubation periods can be fractional days.
+- **Clearer presets.** "Uncertain ranges" and "Point values", with the point values now at the centre of the ranges.
+- **Age-independent mortality.** A new Dig deeper tool reruns the same draws with constant mortality at each trial's own mean lifespan, so you can see how much the shape of the mortality curve matters (Novoseltsev et al. 2012).
+- **Entropy and lifespan.** The Survival curves tab reports demographic entropy H and how strongly Ct moves with mean lifespan and with H.
+- **Logo link.** Clicking the PVEC logo returns to the Define assumptions tab.
+- **Truer previews.** Distribution previews show the exact density, and Normal cards warn when min and max cut off the bell.
+
 ## What's new in version 1.2
 
 - **Charts draw in.** After a run, and each time you open a results tab, bars rise, lines sweep across and the axes stay put.

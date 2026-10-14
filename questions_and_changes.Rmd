@@ -1,0 +1,264 @@
+---
+title: "PVEC App: Questions, Answers and Changes"
+subtitle: "Probabilistic Vectorial Capacity Simulator"
+author: "Jackson R. Strand"
+date: "`r format(Sys.Date(), '%B %d, %Y')`"
+output:
+  html_document:
+    theme:
+      bootswatch: flatly
+    toc: true
+    toc_depth: 1
+    toc_float:
+      collapsed: false
+      smooth_scroll: true
+    self_contained: true
+---
+
+```{r meta, echo=FALSE, results="asis"}
+src <- readLines("app/app.R", n = 20)
+ver <- sub('.*"(.*)".*', "\\1", grep("^APP_VERSION", src, value = TRUE))
+cat(sprintf('<p class="meta">App version <strong>%s</strong></p>', ver))
+```
+
+Hi Bob! In this document, I hope to answer your questions you raised about the PVEC app and detail the changes I made to address them.
+
+<a href="#" class="back-to-top">&uarr; Top</a>
+
+```{css, echo=FALSE}
+body { font-family: -apple-system, "Segoe UI", Helvetica, Arial, sans-serif; line-height: 1.6; }
+h1 { font-size: 1.45em; margin-top: 2em; padding-bottom: 6px; border-bottom: 1px solid #c8d3df; }
+.title { margin-bottom: 4px; }
+.subtitle { color: #5a6b7b; }
+p.meta { color: #5a6b7b; margin: 0 0 14px 0; }
+table:not(.table) { border-collapse: collapse; margin: 12px 0; }
+table:not(.table) th, table:not(.table) td { padding: 6px 14px; border-bottom: 1px solid #d6dfe8; }
+table:not(.table) thead th { background-color: #2c5f8a; color: #fff; border-bottom: none; }
+table:not(.table) tbody tr:nth-child(even) { background-color: #f4f8fb; }
+/* tables inside the Answer / Change boxes take the box's color */
+.answer table, .change table, .answer table > tbody > tr > td, .change table > tbody > tr > td,
+.answer table > thead > tr > th, .change table > thead > tr > th {
+  background-color: transparent !important;
+}
+.answer table, .change table { width: auto; min-width: 60%; margin: 12px 0; }
+.answer table > thead > tr > th, .answer table > tbody > tr > td { border-color: #c8d3df !important; }
+.change table > thead > tr > th, .change table > tbody > tr > td { border-color: #c5dccd !important; }
+.answer table > thead > tr > th { background-color: #dbe7f3 !important; color: #1f4f7a; }
+.change table > thead > tr > th { background-color: #d8ecde !important; color: #1e6b3f; }
+.answer table > tbody > tr:nth-child(even) > td { background-color: rgba(44, 95, 138, 0.06) !important; }
+.change table > tbody > tr:nth-child(even) > td { background-color: rgba(46, 125, 79, 0.07) !important; }
+.answer table td, .change table td, .answer table th, .change table th { padding: 6px 14px; }
+.answer table, .change table { border-collapse: separate; border-spacing: 0; border-radius: 6px; overflow: hidden; }
+.answer table { border: 1.5px solid #8fb0cc !important; }
+.change table { border: 1.5px solid #8fc4a2 !important; }
+.answer table > thead > tr > th:not(:last-child), .answer table > tbody > tr > td:not(:last-child) { border-right: 1px solid #c8d3df !important; }
+.change table > thead > tr > th:not(:last-child), .change table > tbody > tr > td:not(:last-child) { border-right: 1px solid #c5dccd !important; }
+.answer table > tbody > tr:last-child > td, .change table > tbody > tr:last-child > td { border-bottom: none !important; }
+.question { font-size: 1.08em; font-style: italic; color: #3b4a59; margin: 4px 0 14px 0; }
+.tag { display: inline-block; font-size: 0.75em; font-weight: 600; padding: 1px 8px; border-radius: 10px;
+       vertical-align: 1px; white-space: nowrap; }
+.tag-fixed       { background: #dff0e6; color: #1e6b3f; }
+.tag-added       { background: #dde9f5; color: #1f4f7a; }
+.tag-renamed     { background: #ece5f5; color: #54377a; }
+.tag-labeled    { background: #e3eef0; color: #24616b; }
+.back-to-top { position: fixed; right: 18px; bottom: 18px; z-index: 50; padding: 6px 12px; border-radius: 16px;
+               background: #2c5f8a; color: #fff !important; font-size: 13px; text-decoration: none; opacity: 0.85; }
+.back-to-top:hover { opacity: 1; text-decoration: none; }
+html { scroll-behavior: smooth; }
+@media print {
+  #TOC, .tocify, .tocify-wrapper, .back-to-top { display: none !important; }
+  .col-sm-12, .col-md-9, .col-sm-8, .col-md-8 { width: 100% !important; margin-left: 0 !important; }
+  .main-container { max-width: 100%; }
+  .answer, .change { break-inside: avoid; page-break-inside: avoid; }
+  h1 { break-after: avoid; page-break-after: avoid; }
+  body { font-size: 11pt; }
+}
+.main-container { max-width: 1200px; }
+#TOC .list-group-item, .tocify .list-group-item {
+  font-size: 13px;
+  line-height: 1.35;
+  padding: 8px 12px;
+  white-space: normal;
+  text-align: left;
+  border-left: 4px solid transparent;
+}
+.tocify .list-group-item.active, .tocify .list-group-item.active:hover, .tocify .list-group-item.active:focus {
+  background-color: #eef4fa;
+  color: #2c5f8a;
+  border-color: #c8d3df;
+  border-left-color: #2c5f8a;
+  font-weight: 600;
+}
+.answer, .change, .open {
+  border: 1px solid #c8d3df;
+  border-left: 8px solid #2c5f8a;
+  background-color: #eef4fa;
+  border-radius: 6px;
+  padding: 10px 20px;
+  margin: 14px 0;
+}
+.change { border-left-color: #2e7d4f; background-color: #eef7f1; border-color: #c5dccd; }
+.open   { border-left-color: #b26a00; background-color: #fff6e8; border-color: #e6d3b0; }
+.answer > p:first-child, .change > p:first-child { margin-top: 0; }
+.answer > :last-child, .change > :last-child, .open > :last-child { margin-bottom: 0; }
+```
+
+# Q1. Fixed vs. Literature gap {#q1}
+
+::: {.question}
+Why does the Fixed preset give $C_t$ 7.92 while Literature gives a median of 0.46 (and a reported VC of 6.45)?
+:::
+
+::: {.answer}
+**Answer.** The gap came from the preset inputs, not the uncertainty or caculation issues:
+
+| Input | Old Fixed preset | Literature preset (approx.) |
+|:---|---:|---:|
+| Biting rate | 0.75 | 0.45 |
+| Mosquito density | 1.5 | 0.465 |
+| Vector competence | 1 | 0.525 |
+:::
+
+::: {.change}
+**Change.** <span class="tag tag-fixed">Fixed</span> The Point values preset is now at the center (mean) of the Uncertain ranges:
+
+| | Old Point value | New Point value |
+|:---|---:|---:|
+| Biting rate | 0.75 | 0.454 |
+| Incubation period | 10 | 9 |
+| Mosquito density | 1.5 | 0.46 |
+| Vector competence | 1 | 0.525 |
+| Mortality $a$, $b$, $s$ | Styer fits | unchanged |
+| Growth rate, first-bite age | unchanged | unchanged |
+
+- Point-values $C_t$ is now 0.495, against about 0.46 for the uncertain median (previously 7.92).
+- Switching to Point values sets each varying card to the mean of its current distribution, so edited ranges carry over. Switching back restores each distribution as it was.
+- The Model check and paper comparison still use the Styer values (0.75, 1.5, 1, 10), as required for the 0.5% reproduction. The About text says so.
+- Six checks were added, including that each point value equals its distribution's mean.
+:::
+
+# Q2. Triangular looks curved {#q2}
+
+::: {.question}
+Why does the triangular distribution look curved on the Assumptions tab?
+:::
+
+::: {.answer}
+**Answer.** The graphic preview I made drew a *smoothed* density estimate of sampled values, not the actual true-to-ife shape, which was rounding off the corners. The sampler itself was correct, just the graphic was wrong.
+:::
+
+::: {.change}
+**Change.** <span class="tag tag-fixed">Fixed</span> The graphic now draws the exact density, so the triangular has straight sides and a pointy triangular peak.
+:::
+
+# Q3. Normal stops looking normal {#q3}
+
+::: {.question}
+Why does a Normal stop looking normal when the center is near the minimum and the maximum is far out?
+:::
+
+::: {.answer}
+**Answer.** This is expected behavior, and it comes down to the tails. A true normal has symmetric tails that run out in both directions, but the card cuts it off at the **min** and **max**. When the center sits close to the min, the left tail is chopped off almost at the peak while the right tail keeps going. What is left is one long tail on the right, a half-bell that is skewed rather than symmetric, so the draws are no longer normal even though you chose Normal. The effect is stronger when the SD is large relative to the distance between the center and the min. A far-away max only matters if the SD is wide enough to reach it, in which case it truncates the right tail. Either way, the average of the draws shifts away from the center you entered, toward the side with the longer tail.
+:::
+
+::: {.change}
+**Change.** <span class="tag tag-fixed">Fixed</span> This shouldn't be a huge issue for our calculations. A notice appears on the card when the min and max together cut off more than 5% of the tails. It reports how much is cut off and what the draws now average, for example: "Min and max cut off 31% of the normal curve... the draws average 1.01, not 0.5." It also points to the fix: widen the min and max, or lower the SD, so the tails fit inside the range.
+:::
+
+# Q4. Auto trials {#q4}
+
+::: {.question}
+Can the number of trials be set to "auto", running until a standard error threshold is reached?
+:::
+
+::: {.answer}
+**Answer.** Yes! 
+:::
+
+::: {.change}
+**Change.** <span class="tag tag-added">Added</span> I added this functionality. It now lets you check a "auto trials" box and select the SE threshold you would like it to reach before stopping. Copy link now carries the auto-trials setting and its precision, so a shared link reopens with both.
+:::
+
+# Q5. Naming the "Literature" preset {#q5}
+
+::: {.question}
+"Literature" isn't quite the right label for the preset option. What should the "Literature" option be called instead?
+:::
+
+::: {.answer}
+**Answer.** "Literature" describes where the numbers come from ([Styer et al. 2007](https://doi.org/10.4269/ajtmh.2007.76.111)), not what the preset option means. "Probabilistic" and "Deterministic" are options, but potentially jargon-y for the  audience.
+:::
+
+::: {.change}
+**Change.** <span class="tag tag-renamed">Renamed</span> The preset labels are now **Uncertain ranges** and **Point values**. The Model check comparison tab section still reads "Literature-based" as that's what it runs.
+:::
+
+# Q6. Whole-day incubation {#q6}
+
+::: {.question}
+Must the intrinsic incubation period be a whole number of days?
+:::
+
+::: {.answer}
+**Answer.** No. Styer's model is a daily life table, so whole days are natural, but not required. The code only rounded because it looks up the survival column at age $x + n$.
+:::
+
+::: {.change}
+**Change.** <span class="tag tag-added">Added</span> Fractional incubation periods (for example 2.43) are supported by interpolating between the two neighboring days. Whole-day results are left unchanged.
+:::
+
+# Q7. Linking mortality parameters {#q7}
+
+::: {.question}
+Should mortality parameters $a$ and $b$ be linked by default, with an option to unlink?
+:::
+
+::: {.answer}
+**Answer.** Yes, by default they should be. Estimates of $a$ and $b$ from the same life table are strongly correlated, and drawing them independently potentially overstates the spread within the forecast.
+:::
+
+::: {.change}
+**Change.** <span class="tag tag-added">Added</span> They start linked with rank correlation $\rho = -0.5$, reusing the value from the old hint. This is a moderate placeholder, **not an estimate from Styer**, and the app now says so on the link card and in About. A card above the assumptions says they are linked and has an **Unlink them** button. The link is skipped when it cannot apply, for example under Point values or the exponential mortality model. The Model check comparison has no $a$-$b$ link, so the paper numbers stay comparable.
+:::
+
+# Q8. Source of the Styer values {#q8}
+
+::: {.question}
+Where did the Styer hazard (mortality) values come from?
+:::
+
+::: {.answer}
+**Answer.** The point values ($a$, $b$, $s$) are the fitted schedules from the Methods section of Styer et al.; they were not eyeballed from plots. The model reproduces their published $C_t$ to within about 0.5%.
+
+The SDs are only partly traceable:
+
+- The SD for $b$ (0.017) and for $s$ (0.234) are standard errors from Styer's Figure 2B and 2C.
+- Those standard errors describe cohort means ($b = 0.163$, $s = 1.417$, $n = 29$), but they are applied here to the 32-day schedule values (0.1416 and 1.073).
+- A standard error is not a between-cohort SD. The between-cohort SD would be about $\sqrt{29}$, roughly 5.4 times, larger.
+- The SD for $a$ (0.0004) has no source. Figure 2A shows no significant sex difference. Treat 0.0004 as an assumption and label it as such.
+:::
+
+::: {.change}
+**Change.** <span class="tag tag-labeled">Labeled</span> Kept the SDs and labeled them. The $b$ and $s$ cards now say the SD is a standard error of the cohort mean, not a between-cohort SD, so it is probably too narrow. The $a$ card says its SD (0.0004) is an **assumption** with no published source. No numbers changed.
+:::
+
+# Q9. Other features to add {#q9}
+
+::: {.question}
+What other features should be added (second-order analysis, variable mortality, uncertainty flags, ranges)?
+:::
+
+::: {.change}
+**Answer and change.** <span class="tag tag-added">Added</span>
+
+**Flag as uncertain.** Every Fixed card has an Unsure by +/-% field and a [Flag as uncertain] button. It creates a triangular range with the entered value as the likeliest point. It refuses a value of 0 and keeps vector competence within 0-1.
+
+**Two-dimensional (second-order) analysis**, following the thread of [Schleier et al. (2009)](https://doi.org/10.1007/s00477-008-0227-5). A new **Uncertainty vs variability** tab sits under Dig deeper.
+
+- Each varying input is marked uncertain or variable. Uncertain inputs are held fixed in an outer loop; variable inputs are drawn within each outer draw.
+- The output is one $C_t$ curve per possible true population with a 95% band, plus a table of mean, median and 95th percentile, each with an uncertainty interval.
+- The default is 100 outer $\times$ 200 inner draws, capped at 50,000 total. A link between an uncertain and a variable input is dropped, with a note.
+
+**Variable mortality.** In the 2D analysis, the mortality parameters ($a$, $b$ and $s$) default to *variable*, because the spread in Styer et al. is between cohorts. All other inputs default to *uncertain*. Either role can be changed for each input.
+:::
+

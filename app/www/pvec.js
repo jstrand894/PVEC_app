@@ -299,6 +299,7 @@ window.PV_GATE = (function () {
         var p = new URLSearchParams();
         p.set('model', $('input[name=mort_model]:checked').val()); p.set('structure', $('input[name=structure]:checked').val());
         p.set('trials', String($('#n_iter').val()).replace(/,/g, '')); p.set('seed', $('#seed').val());
+        p.set('auto.trials', $('#auto_trials').prop('checked') ? 'TRUE' : 'FALSE'); p.set('auto.tol', $('#auto_tol').val());
         p.set('temp', $('#temp_delta').val()); p.set('temp.on', $('#temp_on').prop('checked') ? 'TRUE' : 'FALSE'); p.set('temp.curve', $('#temp_curve').val()); p.set('temp.ref', $('#temp_ref').val()); p.set('temp.pe', $('#temp_pe').val()); p.set('temp.pm', $('#temp_pm').val()); p.set('temp.pa', $('#temp_pa').val());
         settingIds.forEach(function(id) {
           p.set(id + '.dist', $('#' + id + '_dist').val());
@@ -2342,3 +2343,10 @@ $(function () {
   $(document).on('shiny:connected', function () { mark($('#auto_trials').prop('checked')); });
   $(document).on('change', '#auto_trials', function () { mark(this.checked); });
 })();
+
+// ---- Clicking the logo goes to the Define assumptions tab ----
+$(document).on('click', '.app-logo-link', function(e) {
+  e.preventDefault();
+  if ($('#tabs li.active a').data('value') !== 'Define assumptions') $('#tabs a[data-value="Define assumptions"]').tab('show');
+  window.scrollTo({ top: 0, behavior: 'smooth' });
+});

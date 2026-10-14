@@ -3,11 +3,11 @@ library(shiny)
 `%||%` <- function(a, b) if (is.null(a)) b else a
  
 # Shown in the page footer; update when you publish a new version
-LAST_UPDATED <- "October 13, 2026"
+LAST_UPDATED <- "October 14, 2026"
 CITE_URL     <- "https://jstrand894.github.io/PVEC_app/"
 REPO_URL     <- "https://github.com/jstrand894/PVEC_app"
 CITE_YEAR    <- sub(".*, ", "", LAST_UPDATED)
-APP_VERSION  <- "1.2"
+APP_VERSION  <- "1.3"
 
 # ---- Fixed settings ----
 MAX_AGE <- 400
@@ -29,15 +29,31 @@ rpert <- function(n, lo, mode, hi) {
   lo + (hi - lo) * rbeta(n, a1, a2)
 }
 
-rtnorm <- function(n, m, s, lo, hi) {
-  qnorm(runif(n, pnorm(lo, m, s), pnorm(hi, m, s)), m, s)
+# Quantile of a distribution truncated to [lo, hi], computed in the tail that holds the range so that a range many SDs from the
+# centre still gives draws inside it (the plain difference of two CDFs rounds to 0 or 1 there and gives Inf or NaN).
+# `pf(x, lower.tail, log.p)` and `qf(p, lower.tail, log.p)` are the CDF and quantile function; `med` is the distribution's median.
+trunc_q <- function(u, pf, qf, lo, hi, med) {
+  if (lo >= med) {
+    ls <- pf(lo, FALSE, TRUE); hs <- pf(hi, FALSE, TRUE)
+    x <- qf(ls + log1p(-u * -expm1(hs - ls)), FALSE, TRUE)
+  } else if (hi <= med) {
+    ll <- pf(lo, TRUE, TRUE); hl <- pf(hi, TRUE, TRUE)
+    x <- qf(hl + log1p(-(1 - u) * -expm1(ll - hl)), TRUE, TRUE)
+  } else {
+    pl <- pf(lo, TRUE, FALSE); ph <- pf(hi, TRUE, FALSE)
+    x <- qf(pl + u * (ph - pl), TRUE, FALSE)
+  }
+  pmin(pmax(x, lo), hi)
 }
+tnorm_q <- function(u, m, s, lo, hi)
+  trunc_q(u, function(x, lt, lg) pnorm(x, m, s, lt, lg), function(p, lt, lg) qnorm(p, m, s, lt, lg), lo, hi, m)
+tlnorm_q <- function(u, m, s, lo, hi) {
+  sdlog <- sqrt(log(1 + s^2 / m^2)); meanlog <- log(m) - sdlog^2 / 2
+  trunc_q(u, function(x, lt, lg) plnorm(x, meanlog, sdlog, lt, lg), function(p, lt, lg) qlnorm(p, meanlog, sdlog, lt, lg), lo, hi, exp(meanlog))
+}
+rtnorm <- function(n, m, s, lo, hi) tnorm_q(runif(n), m, s, lo, hi)
 
-rtlnorm <- function(n, m, s, lo, hi) {
-  sdlog   <- sqrt(log(1 + s^2 / m^2))
-  meanlog <- log(m) - sdlog^2 / 2
-  qlnorm(runif(n, plnorm(lo, meanlog, sdlog), plnorm(hi, meanlog, sdlog)), meanlog, sdlog)
-}
+rtlnorm <- function(n, m, s, lo, hi) tlnorm_q(runif(n), m, s, lo, hi)
 
 draw <- function(n, s) {
   switch(s$dist,
@@ -204,8 +220,11 @@ descs <- c(a_bite   = "Bites on humans per mosquito per day.",
 
 # Extra provenance notes shown on a card
 card_notes <- c(
-  growth_r   = "The default is solved so the exponential stable-age case matches the Ct published by Styer et al. (see Model check). It is not an independent field estimate. No range is built in, so it starts fixed.",
-  first_bite = "No published range is built in, so it starts fixed.")
+  growth_r   = "The default is solved so the exponential stable-age case matches the Ct published by Styer et al. (see Model check). It is not an independent field estimate. No range is built in, so it starts fixed. With logistic or Gompertz mortality, Ct can rise and then fall as r increases (Novoseltsev et al. 2012), so a rank-based sensitivity measure can understate its effect.",
+  first_bite = "No published range is built in, so it starts fixed.",
+  mort_a     = "The point value is from the fitted schedule in Styer et al. The default SD is an assumption with no published source.",
+  mort_b     = "The point value is from the fitted schedule in Styer et al. The default SD is the standard error of the cohort mean in Styer et al., not a between-cohort SD, so it is probably narrower than the real variation between cohorts.",
+  mort_s     = "The point value is from the fitted schedule in Styer et al. The default SD is the standard error of the cohort mean in Styer et al., not a between-cohort SD, so it is probably narrower than the real variation between cohorts.")
 
 # One-line description of a distribution spec, used in downloads
 describe_spec <- function(s) {
@@ -336,11 +355,8 @@ qdraw <- function(u, s) {
                    a2 <- 1 + 4 * (s$max - s$mode) / (s$max - s$min)
                    s$min + (s$max - s$min) * qbeta(u, a1, a2) },
     Beta       = s$min + (s$max - s$min) * qbeta(u, s$shape1, s$shape2),
-    Normal     = qnorm(pnorm(s$min, s$mean, s$sd) + u * (pnorm(s$max, s$mean, s$sd) - pnorm(s$min, s$mean, s$sd)),
-                       s$mean, s$sd),
-    Lognormal  = { sdlog <- sqrt(log(1 + s$sd^2 / s$mean^2)); meanlog <- log(s$mean) - sdlog^2 / 2
-                   qlnorm(plnorm(s$min, meanlog, sdlog) + u * (plnorm(s$max, meanlog, sdlog) - plnorm(s$min, meanlog, sdlog)),
-                          meanlog, sdlog) })
+    Normal     = tnorm_q(u, s$mean, s$sd, s$min, s$max),
+    Lognormal  = tlnorm_q(u, s$mean, s$sd, s$min, s$max))
 }
 
 # The mean of an assumption's distribution (the value itself when fixed). Truncated Normal and Lognormal have no closed form
@@ -492,7 +508,8 @@ generate_draws <- function(specs, n, pairs = NULL, uploaded = NULL) {
 # to one trial at a time (the tests check this). `n_eip` is in days between 1 and 150 and may be fractional: the
 # survival and life-expectancy terms are read between the two nearest whole days. `r` and `sigma` are needed only for the stable age distribution.
 #
-ct_batch <- function(model, a, b, s, n_eip, MA2, vec_comp, r = NULL, sigma = NULL) {
+# Cumulative hazard H, survivorship lx and remaining life expectancy ex for a block of trials (rows) at ages 0 to MAX_AGE (columns)
+life_matrices <- function(model, a, b, s) {
   k  <- length(a); na <- MAX_AGE + 1L
   U  <- if (model == "exponential") matrix(a, k, na) else {
     E <- exp(outer(b, AGES))
@@ -506,7 +523,12 @@ ct_batch <- function(model, a, b, s, n_eip, MA2, vec_comp, r = NULL, sigma = NUL
   lx <- pmax(exp(-H), 1e-300)
   Tx <- matrix(0, k, na); Tx[, na] <- lx[, na]
   for (j in (na - 1L):1L) Tx[, j] <- Tx[, j + 1L] + lx[, j]
-  ex <- Tx / lx - 0.5; rm(Tx)
+  list(H = H, lx = lx, ex = Tx / lx - 0.5)
+}
+
+ct_batch <- function(model, a, b, s, n_eip, MA2, vec_comp, r = NULL, sigma = NULL) {
+  k  <- length(a)
+  lm <- life_matrices(model, a, b, s); H <- lm$H; lx <- lm$lx; ex <- lm$ex; rm(lm)
   x    <- 0:(N_CLASS - 1)
   rows <- rep(seq_len(k), N_CLASS)
   n0   <- floor(n_eip); fr <- matrix(n_eip - n0, k, N_CLASS)            # whole days, and the fraction of a day past them
@@ -596,7 +618,7 @@ run_model <- function(model, structure, specs, n, seed, pairs = NULL, uploaded =
 }
 
 # ---- Two-dimensional (second-order) Monte Carlo ----
-# Separates uncertainty (we do not know the true value of an input) from variability (the input genuinely differs between
+# Separates uncertainty (we do not know the true value of an input) from variability (the input differs between
 # mosquitoes, sites or times). Outer loop: each of `n_out` draws fixes every "uncertain" input at one plausible value.
 # Inner loop: for each outer draw, `n_in` draws of the "variable" inputs give a distribution of Ct. Each outer draw is then one
 # possible true population, and the spread across outer draws is the uncertainty about that population's Ct distribution.
@@ -831,6 +853,51 @@ ct_other_structure <- function(res, from, progress = function(done, n) {}, chunk
     i <- from_i:min(from_i + chunk - 1L, n)
     ct[i] <- ct_batch(res$model, d$mort_a[i], res$b[i], res$s[i], d$n_eip[i], d$m_dens[i] * d$a_bite[i]^2,
                       d$vec_comp[i], if (to_stable) r_i[i], if (to_stable) sig_i[i])
+    progress(max(i), n)
+  }
+  ct
+}
+
+# Mean lifespan (life expectancy at emergence, days) and demographic entropy H of each trial's survival curve (Novoseltsev et al. 2012).
+# H = -sum(l ln l) / sum(l) summarises the curvature of the survivorship curve without reference to a mortality model:
+# H = 1 for constant mortality (no ageing), and H falls towards 0 as deaths bunch around one age. Computed in blocks of `chunk` trials.
+life_stats <- function(model, a, b, s, chunk = 250L) {
+  n <- length(a); e0 <- H <- numeric(n)
+  for (from in seq(1L, n, by = chunk)) {
+    i <- from:min(from + chunk - 1L, n)
+    lm <- life_matrices(model, a[i], b[i], s[i])
+    e0[i] <- lm$ex[, 1]
+    H[i]  <- -rowSums(lm$lx * log(lm$lx)) / rowSums(lm$lx)
+  }
+  data.frame(e0 = e0, H = H)
+}
+
+# The constant daily hazard whose mean lifespan equals e0. Mean lifespan is the sum of survivorship over ages 0 to MAX_AGE
+# minus a half day, which for constant hazard u is (1 - q^N) / (1 - q) - 1/2 with q = exp(-u) and N = MAX_AGE + 1. That falls as u
+# rises, so each trial's u is found by bisection (the truncation at MAX_AGE matters when mosquitoes live for months).
+exp_equivalent_hazard <- function(e0) {
+  N <- MAX_AGE + 1L
+  mean_life <- function(u) expm1(-N * u) / expm1(-u) - 0.5
+  e0 <- pmin(pmax(e0, 0.5001), N - 0.5 - 1e-6)
+  lo <- rep(1e-10, length(e0)); hi <- rep(20, length(e0))
+  for (it in 1:80) {
+    mid <- (lo + hi) / 2; long <- mean_life(mid) > e0
+    lo[long] <- mid[long]; hi[!long] <- mid[!long]
+  }
+  (lo + hi) / 2
+}
+
+# The same draws run with age-independent (constant) mortality, each trial's hazard set so its mean lifespan is unchanged.
+# Comparing at equal mean lifespan isolates the shape of the mortality curve, as in Novoseltsev et al. (2012).
+ct_exponential_equivalent <- function(res, progress = function(done, n) {}, chunk = 250L) {
+  d <- res$draws; n <- nrow(d); stable <- identical(res$structure, "stable")
+  sig <- if (stable) pmin(pmax(round(d$first_bite), 0), N_CLASS - 1)
+  ct <- numeric(n)
+  for (from in seq(1L, n, by = chunk)) {
+    i <- from:min(from + chunk - 1L, n)
+    u <- exp_equivalent_hazard(life_stats(res$model, d$mort_a[i], res$b[i], res$s[i])$e0)
+    ct[i] <- ct_batch("exponential", u, rep(0, length(i)), rep(0, length(i)), d$n_eip[i], d$m_dens[i] * d$a_bite[i]^2,
+                      d$vec_comp[i], if (stable) d$growth_r[i], if (stable) sig[i])
     progress(max(i), n)
   }
   ct
@@ -1231,6 +1298,7 @@ build_report <- function(res, bounds, prev = NULL, run_labels = NULL, thresh = N
     "<li>Macdonald G (1957) The Epidemiology and Control of Malaria. Oxford University Press.</li>",
     "<li>Garrett-Jones C (1964) Nature 204:1173-1175. https://doi.org/10.1038/2041173a0</li>",
     "<li>Styer LM, Carey JR, Wang J-L, Scott TW (2007) Am J Trop Med Hyg 76:111-117. https://doi.org/10.4269/ajtmh.2007.76.111</li>",
+    "<li>Novoseltsev VN, Michalski AI, Novoseltseva JA, Yashin AI, Carey JR, Ellis AM (2012) PLoS ONE 7(6):e39479. https://doi.org/10.1371/journal.pone.0039479</li>",
     "</ul></body></html>")
 }
 
@@ -1401,6 +1469,7 @@ assumption_ui <- function(id, s) {
         div(class = "flag-unc", title = "Not sure of the exact number? Give it a range around this value instead. You can adjust the distribution afterwards.",
           numericInput(paste0(id, "_flag_pct"), "Unsure by \u00b1 (%)", 20, min = 1, max = 99, step = 5, width = "100%"),
           actionButton(paste0(id, "_flag"), "Flag as uncertain", class = "btn-sm btn-default"))),
+      uiOutput(paste0(id, "_unflag_ui")),
       conditionalPanel(shows(id, setdiff(dist_choices, "Fixed")),
         fluidRow(column(6, num(id, "min", "Min", s)), column(6, num(id, "max", "Max", s)))),
       conditionalPanel(shows(id, c("Triangular", "PERT")), num(id, "mode", "Likeliest", s)),
@@ -1474,8 +1543,9 @@ empty_state <- function(msg)
 
 ui <- fluidPage(
   titlePanel(div(class = "app-brand",
-                 tags$img(src = "pvec_logo.svg", alt = "PVEC", class = "app-logo logo-light"),
-                 tags$img(src = "pvec_logo_dark.svg", alt = "PVEC", class = "app-logo logo-dark"),
+                 tags$a(href = "#", class = "app-logo-link", title = "Go to Define assumptions", `aria-label` = "PVEC: go to Define assumptions",
+                        tags$img(src = "pvec_logo.svg", alt = "PVEC", class = "app-logo logo-light"),
+                        tags$img(src = "pvec_logo_dark.svg", alt = "PVEC", class = "app-logo logo-dark")),
                  tags$img(src = "pvec_mosquito.svg", alt = "", class = "app-mosquito"),
                  span(class = "app-brand-text", "Probabilistic Vectorial Capacity Simulator"),
                  tags$button(id = "theme_toggle", type = "button", class = "theme-toggle", `aria-label` = "Switch between light and dark theme",
@@ -1729,6 +1799,7 @@ ui <- fluidPage(
               tool_tab("extreme", "arrow-up-wide-short", "Most extreme trials"),
               tool_tab("r0", "calculator", "Convert to R\u2080"),
               tool_tab("struct", "layer-group", "Other age structure"),
+              tool_tab("mort", "hourglass-half", "Age-independent mortality"),
               tool_tab("twod", "braille", "Uncertainty vs variability"),
               tool_tab("compare", "code-compare", "Compare to another run")),
             div(class = "tool-panels",
@@ -1745,8 +1816,12 @@ ui <- fluidPage(
                 p(class = "tab-lead", "Runs the same parameter draws through the other population age structure, so the difference you see is the structure alone."),
                 actionButton("struct_go", "Run the other age structure", class = "btn-default btn-sm"),
                 uiOutput("struct_out", class = "smooth-h")),
+              tool_panel("mort", "Run the same draws with age-independent mortality",
+                p(class = "tab-lead", "Classical vectorial capacity assumes a mosquito is as likely to die at any age. This reruns the same draws with that assumption, setting each trial's constant daily death rate so its mean lifespan is unchanged. The difference you see is the shape of the mortality curve alone. Novoseltsev et al. (2012) found the two differ most when mosquito density and population growth are low, so the choice of mortality model matters most for the final push to elimination."),
+                actionButton("mort_go", "Run with age-independent mortality", class = "btn-default btn-sm"),
+                uiOutput("mort_out", class = "smooth-h")),
               tool_panel("twod", "Separate uncertainty from variability (two-dimensional)",
-                p(class = "tab-lead", "Some inputs are uncertain: there is one true value and we do not know it. Others are variable: they genuinely differ between mosquitoes, sites or times. Mixing the two in one cloud of trials hides which is which. Here every uncertain input is fixed at one plausible value (an outer draw), then the variable inputs are drawn many times within it (the inner draws). Each outer draw is one possible true population; the spread between them is your uncertainty about it."),
+                p(class = "tab-lead", "Some inputs are uncertain: there is one true value and we do not know it. Others are variable: they differ between mosquitoes, sites or times. Mixing the two in one cloud of trials hides which is which. Here every uncertain input is fixed at one plausible value (an outer draw), then the variable inputs are drawn many times within it (the inner draws). Each outer draw is one possible true population; the spread between them is your uncertainty about it."),
                 uiOutput("twod_roles"),
                 div(class = "plot-controls",
                   numericInput("twod_outer", "Uncertainty draws (outer)", 100, min = 10, max = 500, step = 10, width = "190px"),
@@ -1781,7 +1856,9 @@ ui <- fluidPage(
                 "assumption and Ct after removing the effect of all the others, from -1 to 1, with a 95% interval.",
                 "Assumptions that are fixed do not vary and are left out. If you have linked assumptions or uploaded",
                 "draws, read the values with care: the inputs are no longer independent. The model itself has no random",
-                "noise, so PRCC values are often large; compare their order and sign more than their size."))))),
+                "noise, so PRCC values are often large; compare their order and sign more than their size."),
+              p("Rank-based measures assume an assumption pushes Ct in one direction. With logistic or Gompertz mortality, Ct can rise and then fall as the growth rate r increases",
+                "(Novoseltsev et al. 2012), so a small PRCC for r does not prove it is unimportant. Click its bar to see Ct plotted against its drawn values."))))),
         tabPanel("Assumption draws",
           empty_state("Run a simulation to see the values drawn for each assumption."),
           div(class = "results-body",
@@ -1807,7 +1884,9 @@ ui <- fluidPage(
           how_to("How to read these charts",
             p("Survivorship is the fraction of mosquitoes still alive at each age. The daily mortality hazard is the chance",
               "that a mosquito of that age dies that day. The dark line is the median across the first 100 trials, and the",
-              "dotted line marks the median extrinsic incubation period: a mosquito must live past it to transmit.")),
+              "dotted line marks the median extrinsic incubation period: a mosquito must live past it to transmit."),
+            p("Entropy H (Novoseltsev et al. 2012) describes the curvature of the survivorship curve without reference to a mortality model.",
+              "H = 1 means constant mortality (no ageing); H near 0 means almost all deaths happen around one age.")),
           div(class = "plot-card",
             div(class = "no-print seg-wrap",
               radioButtons("surv_view", NULL, inline = TRUE, selected = "both",
@@ -1836,6 +1915,7 @@ ui <- fluidPage(
             h4(class = "mc-head", "How much does lifespan vary between trials?"),
             p(class = "tab-lead", "Each trial has its own median lifespan, the age when half its mosquitoes have died. The spread shows how much the mortality assumptions matter."),
             plotOutput("surv_life_plot", height = 340),
+            uiOutput("surv_ct_link"),
             div(class = "dl-row", dl_menu(dl_img_item("surv_life_plot", "median_lifespan.png")))))),
         tabPanel("Model check",
           h4(class = "mc-head", "Check against published values"),
@@ -1907,7 +1987,7 @@ ui <- fluidPage(
             "draws parameter sets at random to give a distribution of Ct and a sensitivity ranking of the inputs."),
           p("Vectorial capacity follows the classical formulation of Macdonald (1957) and",
             "Garrett-Jones (1964), extended to age-dependent mortality and extrinsic incubation",
-            "following Styer et al. (2007). Mortality can follow exponential, Gompertz, or",
+            "following Styer et al. (2007) and the age-structured form of Novoseltsev et al. (2012). Mortality can follow exponential, Gompertz, or",
             "logistic hazards. Vector competence enters as a multiplicative term."),
           p(class = "eq-plain", strong("In plain terms: "), "a mosquito adds to transmission only if it survives the incubation period, and then each day",
             "it lives it bites people at a certain rate. Older mosquitoes are less likely to survive, so how mortality changes with age matters.",
@@ -2009,7 +2089,7 @@ ui <- fluidPage(
             tags$ul(
               tags$li(strong("Uncertain ranges. "), "Each assumption is drawn from a probability distribution whose range comes from published estimates, as described in the accompanying paper. ",
                       "Biting rate and vector competence use Beta distributions, incubation period and mosquito density use Uniform, and the mortality parameters use truncated Normal distributions. ",
-                      "The growth rate and the age at first bite have no published range, so they stay fixed. Mortality a and b start linked (rank correlation \u22120.5), because they are estimated from the same data; you can unlink them under Define assumptions. Results vary from trial to trial, so the forecast shows a distribution of Ct."),
+                      "The growth rate and the age at first bite have no published range, so they stay fixed. Mortality a and b start linked (rank correlation \u22120.5, a placeholder assumption rather than an estimate), because they are estimated from the same data; you can unlink them under Define assumptions. Results vary from trial to trial, so the forecast shows a distribution of Ct."),
               tags$li(strong("Point values. "), "Every assumption is set to a single value, the mean of its Uncertain ranges distribution, so every trial gives the same Ct. ",
                       "It is the baseline for seeing how much the uncertainty changes the result: switching between the two presets changes the spread and little else. ",
                       "Switching keeps what you have entered, so if you have edited a range, the point value follows it, and switching back restores your distributions. ",
@@ -2042,6 +2122,9 @@ ui <- fluidPage(
                     "Use your own distributions if you have local data."),
             tags$li(strong("Fixed pieces. "), "Mortality follows one of three hazard forms, ages run from 0 to 199 days, and the incubation period is",
                     "kept between 1 and 150 days (fractions of a day are allowed and read between the two nearest days). The default growth rate and age at first bite are fixed or calibrated, not measured."),
+            tags$li(strong("No movement, no hidden heterogeneity. "), "The model assumes no immigration or emigration of mosquitoes or hosts, and no differences in survival between",
+                    "individuals beyond those in the mortality curve. Each trial is deterministic, and the age structure is constant over time. Few data constrain the",
+                    "mortality of wild mosquitoes at older ages (Novoseltsev et al. 2012), so the mortality assumptions are the least certain part of the model."),
             tags$li(strong("No seasonality, space or control. "), "The model has no seasons, geography, vector control or changing populations over time."),
             tags$li(strong("Temperature is a what-if. "), "The temperature option scales the incubation period, the initial mortality hazard and the biting rate",
                     "by the chosen curves. It is a scenario to explore, not a climate projection."),
@@ -2087,7 +2170,10 @@ ui <- fluidPage(
                      src_uses(c("a_bite", "m_dens", "vec_comp", "n_eip"))),
             src_item("Styer LM, Carey JR, Wang J-L, Scott TW (2007) Mosquitoes do senesce: departure from the paradigm of constant mortality. Am J Trop Med Hyg 76:111-117.",
                      "https://doi.org/10.4269/ajtmh.2007.76.111", "https://doi.org/10.4269/ajtmh.2007.76.111",
-                     src_uses(c("mort_a", "mort_b", "mort_s", "growth_r"), c("Model check" = "Model check")))),
+                     src_uses(c("mort_a", "mort_b", "mort_s", "growth_r"), c("Model check" = "Model check"))),
+            src_item("Novoseltsev VN, Michalski AI, Novoseltseva JA, Yashin AI, Carey JR, Ellis AM (2012) An age-structured extension to the vectorial capacity model. PLoS ONE 7(6):e39479.",
+                     "https://doi.org/10.1371/journal.pone.0039479", "https://doi.org/10.1371/journal.pone.0039479",
+                     src_uses(c("growth_r"), c("Survival curves" = "Survival curves")))),
           p("Parameter ranges and distributions are from the literature as described in the",
             "accompanying paper.")),
           div(class = "about-pair",
@@ -2497,6 +2583,21 @@ server <- function(input, output, session) {
     observeEvent(input[[paste0(id, "_reset")]], set_spec(id, preset_spec(id)), ignoreInit = TRUE))
 
   # Flag as uncertain: turn a point value into a triangular range around it (likeliest = the value)
+  flagged <- reactiveValues()
+  lapply(setting_ids, function(id) {
+    output[[paste0(id, "_unflag_ui")]] <- renderUI({
+      f <- flagged[[id]]
+      if (is.null(f) || !identical(input[[paste0(id, "_dist")]], "Triangular")) return(NULL)
+      actionLink(paste0(id, "_unflag"), "Remove uncertainty flag", class = "unflag-link",
+                 title = "Go back to the single value you flagged.")
+    })
+    observeEvent(input[[paste0(id, "_unflag")]], {
+      v <- flagged[[id]]; if (is.null(v)) return()
+      updateSelectInput(session, paste0(id, "_dist"), selected = "Fixed")
+      updateNumericInput(session, paste0(id, "_value"), value = v)
+      flagged[[id]] <- NULL
+    }, ignoreInit = TRUE)
+  })
   lapply(setting_ids, function(id) observeEvent(input[[paste0(id, "_flag")]], {
     v <- input[[paste0(id, "_value")]]; pct <- input[[paste0(id, "_flag_pct")]]
     if (is.null(v) || is.na(v) || is.null(pct) || is.na(pct) || pct <= 0 || pct >= 100) {
@@ -2506,6 +2607,7 @@ server <- function(input, output, session) {
     lo <- v * (1 - pct / 100); hi <- v * (1 + pct / 100)
     if (v < 0) { tmp <- lo; lo <- hi; hi <- tmp }
     if (id == "vec_comp") { lo <- max(lo, 0); hi <- min(hi, 1) }
+    flagged[[id]] <- v
     updateSelectInput(session, paste0(id, "_dist"), selected = "Triangular")
     updateNumericInput(session, paste0(id, "_min"), value = signif(lo, 6))
     updateNumericInput(session, paste0(id, "_mode"), value = v)
@@ -2694,7 +2796,7 @@ server <- function(input, output, session) {
         div(class = "hint-body",
             if (linked)
               p(strong(sprintf("Mortality a and b are linked (\u03c1 = %s).", format(rho))), " They are estimated from the same data, and in published fits they move in opposite directions: ",
-                "a higher starting hazard goes with a slower rate of ageing. Linking them keeps the forecast from looking wider or narrower than the data support. You can change the strength under Linking assumptions.")
+                "a higher starting hazard goes with a slower rate of ageing. Linking them keeps the forecast from looking wider or narrower than the data support. The strength of -0.5 is a placeholder assumption, not an estimate from the source data. You can change it under Linking assumptions.")
             else
               p(strong("Mortality a and b are drawn independently."), " They are usually estimated from the same data and tend to move in opposite directions, ",
                 "so drawing them independently can make the forecast look wider or narrower than the data support."),
@@ -3014,6 +3116,39 @@ server <- function(input, output, session) {
     ratio <- if (identical(sr$from, "stable")) median(sr$ct2) / median(res$ct) else median(res$ct) / median(sr$ct2)
     tagList(div(class = "compare-table", HTML(html_table(df))),
             p(class = "tab-lead", sprintf("The median Ct under synchronous emergence is %s times the median under the stable age distribution for these draws.", fmt3(ratio))))
+  })
+
+  # ---- Age-independent mortality at the same mean lifespan ----
+  mort_res <- reactiveVal(NULL)
+  observeEvent(results(), mort_res(NULL), ignoreInit = TRUE)
+  observeEvent(input$mort_go, {
+    res <- results()
+    if (identical(res$model, "exponential")) {
+      notify("This run already uses constant (age-independent) mortality, so there is nothing to compare. Choose the logistic or Gompertz model.", type = "warning", duration = 8)
+      return()
+    }
+    ct2 <- withProgress(message = "Running with age-independent mortality", value = 0,
+      ct_exponential_equivalent(res, progress = function(i, n) setProgress(i / n)))
+    mort_res(list(ct2 = ct2, run = res$run))
+  })
+  mort_names <- c("Age-dependent (this run)", "Age-independent, same mean lifespan")
+  output$mort_out <- renderUI({
+    mr <- mort_res(); req(mr)
+    tagList(plotOutput("mort_plot", height = 300), uiOutput("mort_table"))
+  })
+  output$mort_plot <- renderPlot({
+    mr <- mort_res(); req(mr); res <- results()
+    draw_forecast(res$ct, c(-Inf, Inf), mr$ct2, mort_names, NA, bins = 50)
+  }, alt = "Histograms of Ct with age-dependent mortality and with age-independent mortality of the same mean lifespan, using the same draws.")
+  output$mort_table <- renderUI({
+    mr <- mort_res(); req(mr); res <- results()
+    f <- function(x) c(fmt3(median(x)), fmt3(mean(x)), fmt3(quantile(x, 0.025)), fmt3(quantile(x, 0.975)))
+    df <- data.frame(Mortality = mort_names, rbind(f(res$ct), f(mr$ct2)), stringsAsFactors = FALSE)
+    names(df) <- c("Mortality", "Median", "Mean", "2.5th percentile", "97.5th percentile")
+    ratio <- median(mr$ct2) / median(res$ct); higher <- 100 * mean(mr$ct2 > res$ct)
+    tagList(div(class = "compare-table", HTML(html_table(df))),
+            p(class = "tab-lead", sprintf("Holding each trial's mean lifespan fixed, constant mortality gives a median Ct that is %s times the age-dependent median, and a higher Ct in %.0f%% of trials.",
+                                          fmt3(ratio), higher)))
   })
 
   # ---- Two-dimensional analysis: which inputs are uncertain and which are variable ----
@@ -3537,11 +3672,28 @@ server <- function(input, output, session) {
 
   surv_lts <- reactive(surv_tables(results()))
 
+  # How strongly Ct moves with each trial's mean lifespan and entropy, for up to the first 2,000 trials
+  surv_stats <- reactive({
+    res <- results(); n <- min(2000, nrow(res$draws)); i <- seq_len(n)
+    life_stats(res$model, res$draws$mort_a[i], res$b[i], res$s[i])
+  })
+  output$surv_ct_link <- renderUI({
+    res <- results(); st <- surv_stats(); ct <- res$ct[seq_len(nrow(st))]
+    cc <- function(x) if (length(unique(x)) < 2 || length(unique(ct)) < 2) NA_real_ else suppressWarnings(cor(x, ct, method = "spearman"))
+    f  <- function(r) if (is.na(r)) "not defined" else sprintf("%.2f", r)
+    r1 <- cc(st$e0); r2 <- cc(st$H)
+    if (is.na(r1) && is.na(r2))
+      return(p(class = "tab-lead", "Mortality is the same in every trial, so mean lifespan and entropy do not vary and cannot be compared with Ct."))
+    p(class = "tab-lead", sprintf("Across these %s trials, Ct has a rank correlation of %s with mean lifespan and %s with entropy H. Mean lifespan is the main route from mortality to Ct; entropy shows whether the shape of the survival curve matters beyond it (Novoseltsev et al. 2012).",
+                                  format(nrow(st), big.mark = ","), f(r1), f(r2)))
+  })
+
   # Headline numbers for the survival curves, taken from the same first 100 trials as the lines
   output$surv_tiles <- renderUI({
     res <- results(); lts <- surv_lts(); k <- seq_along(lts)
     half  <- vapply(lts, function(lt) { i <- which(lt$lx < 0.5)[1]; if (is.na(i)) NA_real_ else i - 1 }, 0)
     ex0   <- vapply(lts, function(lt) lt$ex[1], 0)
+    ent   <- vapply(lts, function(lt) -sum(lt$lx * log(lt$lx)) / sum(lt$lx), 0)
     alive <- vapply(k, function(i) at_age(lts[[i]]$lx, res$draws$n_eip[i]), 0)
     ne    <- median(res$draws$n_eip[k])
     tile  <- function(label, value, sub, lead = FALSE)
@@ -3553,6 +3705,7 @@ server <- function(input, output, session) {
       tile("Median lifespan", if (all(is.na(half))) "over 400 days" else sprintf("%s days", fmt3(median(half, na.rm = TRUE))),
            "age when half have died"),
       tile("Life expectancy", sprintf("%s days", fmt3(median(ex0))), "at emergence"),
+      tile("Entropy H", fmt3(median(ent)), "1 = constant mortality; lower = deaths bunch at one age"),
       tile("Mortality model", tools::toTitleCase(res$model), "from Simulation settings"))
   })
 

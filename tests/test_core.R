@@ -269,5 +269,28 @@ pt <- mk_specs("logistic", "stable", "lit"); for (id in names(pt)) pt[[id]] <- p
 uc <- run_model("logistic", "stable", mk_specs("logistic", "stable", "lit"), 4000, 3)$ct
 check(abs(run_model("logistic", "stable", pt, 5, 1)$ct[1] / median(uc) - 1) < 0.1, "the Point values Ct is close to the median of the Uncertain ranges Ct")
 
+# --- Mean lifespan, entropy and the age-independent comparison (Novoseltsev et al. 2012) ----------------------------------
+u0 <- 0.03; q0 <- exp(-u0)
+ls0 <- life_stats("exponential", u0, 0, 0)
+check(abs(ls0$e0 - ((1 - q0^(MAX_AGE + 1)) / (1 - q0) - 0.5)) < 1e-8, "mean lifespan for constant mortality matches the closed form")
+check(abs(ls0$H - u0 * q0 / (1 - q0)) < 1e-3, "entropy for constant mortality matches the closed form (close to 1)")
+pl <- styer_pars$logistic; lt1 <- life_table(hazard("logistic", AGES, pl[["a"]], pl[["b"]], pl[["s"]]))
+ls1 <- life_stats("logistic", pl[["a"]], pl[["b"]], pl[["s"]])
+check(abs(ls1$e0 - lt1$ex[1]) < 1e-8, "block mean lifespan equals the one-trial life table's life expectancy")
+check(abs(ls1$H + sum(lt1$lx * log(lt1$lx)) / sum(lt1$lx)) < 1e-8, "block entropy equals the one-trial calculation")
+check(ls1$H < 1 && life_stats("gompertz", 0.0066, 0.0623, 0)$H < 1, "age-dependent mortality has entropy below 1")
+for (target in c(8, 25, 60)) {
+  u <- exp_equivalent_hazard(target)
+  check(abs(life_stats("exponential", u, 0, 0)$e0 - target) < 1e-2, sprintf("the matched constant hazard keeps a mean lifespan of %g days", target))
+}
+ex_run <- run_model("exponential", "stable", mk_specs("exponential", "stable", "lit"), 120, 5)
+ex_run$model <- "exponential"; ex_run$structure <- "stable"
+check(max(abs(ct_exponential_equivalent(ex_run, chunk = 50) / ex_run$ct - 1)) < 1e-3, "age-independent comparison on a constant-mortality run returns the same Ct")
+lg_run <- run_model("logistic", "synchronous", mk_specs("logistic", "synchronous", "lit"), 120, 5)
+lg_run$model <- "logistic"; lg_run$structure <- "synchronous"
+ct_eq <- ct_exponential_equivalent(lg_run, chunk = 50)
+check(length(ct_eq) == 120 && all(is.finite(ct_eq)) && all(ct_eq > 0), "age-independent comparison gives a finite Ct for every trial")
+check(identical(ct_eq, ct_exponential_equivalent(lg_run, chunk = 120)), "age-independent comparison does not depend on the block size")
+
 if (!all(unlist(results))) stop(sprintf("%d check(s) failed", sum(!unlist(results))), call. = FALSE)
 cat(sprintf("\nAll %d checks passed.\n", length(results)))

@@ -59,6 +59,7 @@
     .container-fluid > h2 { margin: 8px 0 28px; }
     .app-brand { display: flex; align-items: center; gap: 14px; }
     .app-logo { height: 38px; width: auto; display: block; }
+    .app-logo-link { display: block; line-height: 0; border-radius: 4px; }
     .app-mosquito { height: 36px; width: auto; display: block; margin-left: -14px; }
     .app-brand-text { font-size: 22px; font-weight: 400; color: var(--muted); line-height: 1.2; }
     @media (max-width: 500px) { .app-brand-text { font-size: 16px; } .app-logo { height: 30px; } .app-mosquito { height: 28px; } }
@@ -1606,8 +1607,10 @@
     .read-clock { color: var(--accent); margin-right: 2px; }
 
 /* Flag as uncertain (inside a fixed card) and the roles list of the two-dimensional analysis */
-.flag-unc { display: flex; align-items: flex-end; gap: 8px; margin: 4px 0 8px; }
-.flag-unc .form-group { margin-bottom: 0; flex: 0 0 120px; }
+.flag-unc { display: flex; flex-direction: column; align-items: stretch; gap: 6px; margin: 4px 0 8px; }
+.flag-unc .form-group { margin-bottom: 0; width: 100%; }
+.flag-unc .btn { width: 100%; white-space: normal; }
+.unflag-link { display: inline-block; font-size: 12px; margin: 0 0 8px; }
 .twod-roles { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 0 14px; margin: 8px 0; }
 .twod-roles .form-group { margin-bottom: 8px; }
 
