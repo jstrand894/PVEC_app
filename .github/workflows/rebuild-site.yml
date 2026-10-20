@@ -14,6 +14,11 @@ on:
 permissions:
   contents: write
 
+# A newer push supersedes an in-flight build, so the stale one can't race it to push.
+concurrency:
+  group: rebuild-site
+  cancel-in-progress: true
+
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -43,5 +48,7 @@ jobs:
             echo "Site already up to date."
           else
             git commit -m "Rebuild site [skip ci]"
+            # main may have moved during the build; replay our commit on top, then push.
+            git pull --rebase origin main
             git push
           fi
