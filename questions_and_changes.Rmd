@@ -74,6 +74,10 @@ html { scroll-behavior: smooth; }
   body { font-size: 11pt; }
 }
 .main-container { max-width: 1200px; }
+.wide-table { overflow-x: auto; }
+.wide-table table { font-size: 0.82em; min-width: 0 !important; }
+.wide-table table td, .wide-table table th { padding: 3px 6px !important; }
+.wide-table table td { white-space: nowrap; }
 #TOC .list-group-item, .tocify .list-group-item {
   font-size: 13px;
   line-height: 1.35;
@@ -262,3 +266,45 @@ What other features should be added (second-order analysis, variable mortality, 
 **Variable mortality.** In the 2D analysis, the mortality parameters ($a$, $b$ and $s$) default to *variable*, because the spread in Styer et al. is between cohorts. All other inputs default to *uncertain*. Either role can be changed for each input.
 :::
 
+
+# Q10. Static vs. age-dependent vs. probabilistic VC {#q10}
+
+::: {.question}
+How do completely static VC, static VC with Styer's age-dependent mortality, and the probabilistic VC compare across a range of scenarios?
+:::
+
+::: {.change}
+**Answer and change.** <span class="tag tag-added">Added</span> A script, `analysis/scenario_comparison.R`, runs all three across four input sets, three mortality models (exponential, Gompertz, logistic) and both age structures (24 scenarios, 10,000 draws each, seed 2026). The three methods are:
+
+Table labels: *Styer* is Styer's inputs, *App* is the app's Point values, and the EIP rows hold incubation at 6.5 or 14 days. Mortality is exp(onential), gomp(ertz) or logi(stic); *sync.* is the synchronous cohort. The last two columns are ratios to the age-dependent value (static, and probabilistic median).
+
+- **Static VC**: the classical $m a^2 V e^{-\mu n}/\mu$ with one constant daily mortality $\mu$, set so its mean lifespan equals the mortality model's (about 32 days for every Styer fit). No age structure.
+- **Age-dependent VC**: one set of point values run through the app with Styer's age-dependent mortality.
+- **Probabilistic VC**: the same model with the *Uncertain ranges* preset (Uniform, 20% either side, for the Styer inputs, which have no ranges of their own). In the EIP rows the incubation period is held at the stated value and the other inputs vary.
+
+```{r scen, echo=FALSE, results="asis"}
+s <- read.csv("analysis/scenario_comparison.csv", check.names = FALSE)
+f <- function(x) ifelse(x >= 100, sprintf("%.0f", x), ifelse(x >= 10, sprintf("%.1f", x), sprintf("%.2f", x)))
+short <- c("Styer inputs" = "Styer", "App point values" = "App", "App, EIP 6.5 d (held)" = "App, EIP 6.5", "App, EIP 14 d (held)" = "App, EIP 14")
+t <- data.frame(Inputs = unname(short[s$Inputs]), Mortality = substr(s$Mortality, 1, 4), Structure = ifelse(s$Structure == "stable", "stable", "sync."),
+                `Static` = f(s[["Static VC"]]), `Age-dep.` = f(s[["Age-dependent VC"]]),
+                `Prob. median` = f(s[["Prob. median"]]), `Prob. mean` = f(s[["Prob. mean"]]),
+                `Prob. 95% range` = paste0(f(s[["Prob. 2.5%"]]), "\u2013", f(s[["Prob. 97.5%"]])),
+                `Static ratio` = sprintf("%.2f", s[["Static / age-dep."]]),
+                `Median ratio` = sprintf("%.2f", s[["Prob. median / age-dep."]]),
+                check.names = FALSE)
+cat('<div class="wide-table">', knitr::kable(t, align = "lllrrrrrrr"), '</div>', sep = "\n")
+```
+
+**What it shows.**
+
+- **The large VC values come from the inputs, not the mortality model.** With Styer's inputs ($m = 1.5$, $a = 0.75$, $V = 1$) static VC is 19.7; with the app's Point values it is 1.2. The mortality fits all give a mean lifespan near 32 days.
+- **Static VC overstates the age-dependent value.** With a synchronous cohort by 17 to 43% for Gompertz and logistic mortality, and with a stable age distribution by 73% (exponential) to 183% (logistic, 14-day EIP). The gap grows with the incubation period, because ageing mortality removes mosquitoes that would have survived it under constant mortality.
+- **Exponential mortality with a synchronous cohort matches static VC exactly**, as it should; the stable age distribution alone cuts it by 42% because young mosquitoes have not yet bitten.
+- **The probabilistic median sits 2 to 6% below the age-dependent point value**, and the mean sits above it. The inputs are skewed, so the point value is not the middle of the result. Roughly 46 to 48% of probabilistic runs exceed the point value.
+- **The 95% range is wide**, roughly from a third of the point value to three times it, which is larger than the gap between static and age-dependent VC in the synchronous case.
+:::
+
+::: {.open}
+**Open.** The Styer inputs and mortality fits come from the preprint. I have not yet checked whether the published version keeps the same values, so the 19.7 reference above may change.
+:::

@@ -1,5 +1,6 @@
 # Browser-level tests for PVEC: starts the app in headless Chrome and clicks through it with shinytest2.
 # Run from the repository root:   Rscript tests/test_ui.R
+# Run it in the terminal, not with source() in RStudio.
 # Needs shinytest2 and Google Chrome. Takes a minute or two. Exit status is 1 if any check fails.
 Sys.setenv(NOT_CRAN = "true")      # shinytest2 skips itself unless it knows this is not a CRAN check
 suppressMessages(library(shinytest2))
@@ -38,7 +39,6 @@ has_error <- function(app) isTRUE(js(app, "document.querySelectorAll('.shiny-out
 toasts <- function(app) js(app, "Array.from(document.querySelectorAll('.shiny-notification, .pv-toast, .toast')).map(function(e){return e.innerText}).join(' | ')")
 
 app <- new_app()
-on.exit(try(app$stop(), silent = TRUE), add = TRUE)
 
 section("1. The page loads")
 check("the page has a title and no startup error", nzchar(js(app, "document.title")) && !has_error(app))
@@ -122,7 +122,6 @@ check("the link includes the auto-trials switch and precision", grepl("auto.tria
 check("the link includes model, structure, trials and seed", all(vapply(c("model=gompertz", "structure=synchronous", "trials=3000", "seed=777"), grepl, TRUE, x = link, fixed = TRUE)))
 frag <- sub("^[^#]*#", "", link)
 lk <- open_link(frag); app2 <- lk$app
-on.exit(try(lk$bg$kill(), silent = TRUE), add = TRUE)
 Sys.sleep(2); app2$wait_for_idle(1500)
 check("opening the link restores the model and structure", identical(val(app2, "mort_model"), "gompertz") && identical(val(app2, "structure"), "synchronous"))
 check("opening the link restores Auto trials and its precision", isTRUE(val(app2, "auto_trials")) && isTRUE(all.equal(val(app2, "auto_tol"), 4)))
@@ -159,5 +158,6 @@ check("Reset opens its pop-up", isTRUE(js(app, "!!document.querySelector('.modal
 click(app, "reset_preset")
 check("Reset values to this preset restores the trial count", identical(val(app, "n_iter"), "1,000"))
 
+try(app$stop(), silent = TRUE); try(lk$bg$kill(), silent = TRUE)
 cat(sprintf("\n%d of %d checks passed.\n", sum(unlist(results)), length(results)))
-if (!all(unlist(results))) quit(status = 1)
+if (!all(unlist(results)) && !interactive()) quit(status = 1)

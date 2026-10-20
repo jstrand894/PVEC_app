@@ -4,8 +4,20 @@
     {
       "name": "pvec",
       "runtimeExecutable": "Rscript",
-      "runtimeArgs": ["-e", "shiny::runApp('app', port = 4173, launch.browser = FALSE)"],
+      "runtimeArgs": [
+        "-e",
+        "shiny::runApp('app', port = 4173, launch.browser = FALSE)"
+      ],
       "port": 4173
+    },
+    {
+      "name": "rmd-preview",
+      "runtimeExecutable": "Rscript",
+      "runtimeArgs": [
+        "-e",
+        "servr::rmdv2('.', port = 4174, daemon = FALSE, browser = FALSE)"
+      ],
+      "port": 4174
     }
   ]
 }

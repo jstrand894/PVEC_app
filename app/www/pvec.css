@@ -707,42 +707,6 @@
     .dd-body .form-group { margin-bottom: 8px; }
     @keyframes dd-drop { from { opacity: 0; transform: translateY(-4px); } to { opacity: 1; transform: none; } }
 
-    /* Mortality model and age structure as visible choice buttons, like the preset */
-    #mort_model > label.control-label { display: block; margin-bottom: 4px; }
-    #mort_model .shiny-options-group { margin-top: 0; }
-    #mort_model .radio label { display: block; padding: 0; width: 100%; }
-    #mort_model input[type=radio] { position: absolute; opacity: 0; pointer-events: none; }
-    #mort_model .radio label span { display: block;   border: 1px solid var(--line-strong);
-       background: var(--surface); color: var(--text); cursor: pointer; }
-    #mort_model .radio label:hover span { background: var(--hover); }
-    #mort_model .radio label:hover input:checked + span { background: var(--btn-dark); }
-    #mort_model input:checked + span { background: var(--btn); border-color: var(--accent-dark); color: #fff; }
-    #mort_model input:checked + span::before {  font-weight: bold; }
-    #mort_model input:focus-visible + span { outline: 2px solid #66afe9; outline-offset: 1px; }
-    #structure > label.control-label { display: block; margin-bottom: 4px; }
-    #structure .shiny-options-group { margin-top: 0; }
-    #structure .radio label { display: block; padding: 0; width: 100%; }
-    #structure input[type=radio] { position: absolute; opacity: 0; pointer-events: none; }
-    #structure .radio label span { display: block;  font-size: 13px; border: 1px solid var(--line-strong);
-       background: var(--surface); color: var(--text); cursor: pointer; }
-    #structure .radio label:hover span { background: var(--hover); }
-    #structure .radio label:hover input:checked + span { background: var(--btn-dark); }
-    #structure input:checked + span { background: var(--btn); border-color: var(--accent-dark); color: #fff; }
-    #structure input:checked + span::before {  font-weight: bold; }
-    #structure input:focus-visible + span { outline: 2px solid #66afe9; outline-offset: 1px; }
-    #mort_model .shiny-options-group { display: flex; gap: 0; }
-    #mort_model .radio { flex: 1 1 0; margin: 0; }
-    #mort_model .radio label span { text-align: center; border-radius: 0;  }
-    #mort_model .radio:first-child label span { border-radius: 4px 0 0 4px; }
-    #mort_model .radio:last-child label span { border-radius: 0 4px 4px 0; border-left-width: 0; }
-    #mort_model input:checked + span::before { content: none; }
-    #mort_model input:checked + span { font-weight: 600; }
-    #mort_model .radio label span { font-size: 12px; padding: 5px 2px; }
-    #mort_model, #structure { margin-bottom: 10px; }
-    #mort_model .radio:not(:first-child) label span { border-left-width: 0; }
-    #mort_model .radio:not(:first-child):not(:last-child) label span { border-radius: 0; }
-    #structure input:checked + span::before { content: none; }
-
     /* Sidebar "Trials and seed": same look as the other sidebar labels (flat, flush left, same font and colour) */
     .well .run-options { border: 0; background: transparent; border-radius: 0; margin: 0 0 8px; }
     .well .run-options > summary, .well .run-options[open] > summary { padding: 0; margin: 0 0 2px; border: 0; border-radius: 0; background: transparent;
@@ -750,13 +714,6 @@
     .well .run-options > summary:hover { background: transparent; color: var(--accent-dark); }
     .well .run-options .dd-body { padding: 0; animation: none; }
 
-    /* Age structure: side-by-side segments like the preset */
-    #structure .shiny-options-group { display: flex; gap: 0; }
-    #structure .radio { flex: 1 1 0; margin: 0; }
-    #structure .radio label span { text-align: center; border-radius: 0; padding: 5px 4px; }
-    #structure .radio:first-child label span { border-radius: 4px 0 0 4px; }
-    #structure .radio:last-child label span { border-radius: 0 4px 4px 0; border-left-width: 0; }
-    #structure input:checked + span { font-weight: 600; }
 
     /* Small "?" help bubble next to a label; the explanation appears on hover or keyboard focus */
     .help-tip { position: relative; display: inline-flex; align-items: center; justify-content: center; width: 15px; height: 15px; margin-left: 2px;
@@ -1634,3 +1591,197 @@
 .run-box-note { opacity: 0; transition: opacity var(--dur, .25s) ease; }
 .run-box.auto .run-box-note { opacity: 1; transition-delay: var(--dur-fast, .08s); }
 @media (prefers-reduced-motion: reduce) { .swap-cell > *, .run-box-note-wrap, .run-box-note { transition: none !important; } }
+
+/* Advanced switch in the settings header, and the options it reveals */
+.adv-switch-wrap { display: flex; align-items: center; gap: 6px; margin-left: auto; margin-right: 8px; font-size: 12px; font-weight: 600; color: var(--muted); }
+.adv-switch-wrap label { margin: 0; font-weight: 600; cursor: pointer; }
+.adv-main-switch { opacity: 1 !important; visibility: visible !important; pointer-events: auto !important; margin-left: 0; }
+#advanced:checked + .adv-main-switch { background: var(--btn); border-color: var(--btn-dark); }
+#advanced:checked + .adv-main-switch .temp-sw-knob { transform: translateX(14px); }
+.adv-only { display: none; }
+body.show-advanced .adv-only { display: block; }
+body:not(.show-advanced) .adv-only-col { display: none; }
+
+
+/* Advanced options slide down when the switch is turned on */
+@keyframes adv-in { from { max-height: 0; opacity: 0; margin-top: 0; margin-bottom: 0; padding-top: 0; padding-bottom: 0; overflow: clip; overflow-clip-margin: 14px; }
+                    to   { max-height: 400px; opacity: 1; overflow: clip; overflow-clip-margin: 14px; } }
+body.show-advanced .adv-only { animation: adv-in .35s ease; }
+@media (prefers-reduced-motion: reduce) { body.show-advanced .adv-only { animation: none; } }
+
+.run-section .run-box { border: 0; background: none; padding: 0; margin: 0; }
+.run-section .run-box-sub { margin-top: 0; }
+
+
+
+.well #temp_curve .radio label span, .well .temp-chip { border-radius: var(--box-r); }
+.well .form-control, .well .btn, .well .reset-open { border-radius: var(--box-r); }
+.sidebar-dock .btn, #run { border-radius: 8px; }
+
+/* Bars grow up from the axis (left to right) each time the figure switches */
+@keyframes sf-grow { from { transform: scaleY(0); } to { transform: scaleY(1); } }
+.struct-fig rect { transform-box: fill-box; transform-origin: 50% 100%; animation: sf-grow .45s cubic-bezier(.2,.8,.2,1) both; }
+.struct-fig rect:nth-child(1) { animation-delay: 18ms; }
+.struct-fig rect:nth-child(2) { animation-delay: 36ms; }
+.struct-fig rect:nth-child(3) { animation-delay: 54ms; }
+.struct-fig rect:nth-child(4) { animation-delay: 72ms; }
+.struct-fig rect:nth-child(5) { animation-delay: 90ms; }
+.struct-fig rect:nth-child(6) { animation-delay: 108ms; }
+.struct-fig rect:nth-child(7) { animation-delay: 126ms; }
+.struct-fig rect:nth-child(8) { animation-delay: 144ms; }
+.struct-fig rect:nth-child(9) { animation-delay: 162ms; }
+.struct-fig rect:nth-child(10) { animation-delay: 180ms; }
+.struct-fig rect:nth-child(11) { animation-delay: 198ms; }
+.struct-fig rect:nth-child(12) { animation-delay: 216ms; }
+.struct-fig rect:nth-child(13) { animation-delay: 234ms; }
+.struct-fig rect:nth-child(14) { animation-delay: 252ms; }
+.struct-fig rect:nth-child(15) { animation-delay: 270ms; }
+.struct-fig rect:nth-child(16) { animation-delay: 288ms; }
+.struct-fig rect:nth-child(17) { animation-delay: 306ms; }
+.struct-fig rect:nth-child(18) { animation-delay: 324ms; }
+.struct-fig rect:nth-child(19) { animation-delay: 342ms; }
+.struct-fig rect:nth-child(20) { animation-delay: 360ms; }
+.struct-fig rect:nth-child(21) { animation-delay: 378ms; }
+.struct-fig rect:nth-child(22) { animation-delay: 396ms; }
+.struct-fig rect:nth-child(23) { animation-delay: 414ms; }
+.struct-fig rect:nth-child(24) { animation-delay: 432ms; }
+@media (prefers-reduced-motion: reduce) { .struct-fig rect { animation: none; } }
+
+/* ---- Simulation settings cleanup ---- */
+.well { --gap: 16px; --card-bg: var(--surface-2); --card-line: var(--line); }
+
+/* Groups with a small title, one even gap between them */
+.set-group { margin-bottom: var(--gap); }
+.set-group > .form-group, .set-group > .structure-row, .set-group .preset-vary { margin-bottom: 10px; }
+.set-group > :last-child { margin-bottom: 0; }
+.set-group-title { display: flex; align-items: baseline; justify-content: space-between; margin: 0 0 8px; padding-bottom: 4px;
+  border-bottom: 1px solid var(--line); font-size: 10.5px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; color: var(--muted); }
+.set-group-link { font-size: 11px; font-weight: 600; letter-spacing: 0; text-transform: none; }
+
+/* One label style for every control; the "?" shows when you hover the control (always on touch screens and on keyboard focus) */
+.well .control-label { font-size: 13px; font-weight: 600; margin-bottom: 4px; }
+.well .help-tip { opacity: 0; transition: opacity var(--dur-fast) ease, color var(--dur-fast), border-color var(--dur-fast); }
+.well .form-group:hover .help-tip, .well .structure-row:hover .help-tip, .well .help-tip:focus, .well .help-tip:hover { opacity: 1; }
+@media (hover: none) { .well .help-tip { opacity: 1; } }
+
+
+/* Past runs fold away until opened */
+.history-toggle { display: flex; align-items: center; gap: 6px; padding: 0; border: 0; background: none; font: inherit; font-weight: 700; cursor: pointer; color: inherit; }
+.history-toggle .chev { display: inline-flex; font-size: 10px; transition: transform var(--dur-fast) ease; }
+.history-box:not(.collapsed) .history-toggle .chev { transform: rotate(90deg); }
+.history-count { font-weight: 600; font-size: 11px; color: var(--muted); }
+.history-box.collapsed .history-sub, .history-box.collapsed #scenario_list { display: none; }
+.history-box.collapsed .history-header { margin-bottom: 0; }
+
+
+
+/* Past runs open and close with a slide */
+.history-body { display: grid; grid-template-rows: 1fr; transition: grid-template-rows var(--dur) cubic-bezier(.4,0,.2,1), opacity var(--dur) ease, visibility 0s; }
+.history-body-in { min-height: 0; overflow: hidden; }
+.history-box.collapsed .history-body { grid-template-rows: 0fr; opacity: 0; visibility: hidden; transition: grid-template-rows var(--dur) cubic-bezier(.4,0,.2,1), opacity var(--dur) ease, visibility 0s linear var(--dur); }
+.history-box.collapsed #scenario_list, .history-box.collapsed .history-sub { display: block; }
+.history-header { margin-bottom: 0; }
+.history-body-in > .history-sub { margin: 6px 0 8px; }
+@media (prefers-reduced-motion: reduce) { .history-body, .history-box.collapsed .history-body { transition: none; } }
+
+.mort-fig .mf-spark { display: none; opacity: 0; }
+.mort-fig .mf-spark path { fill: none; stroke: var(--btn); stroke-linecap: round; vector-effect: non-scaling-stroke; animation: none !important; opacity: 1 !important; }
+.mort-fig .mf-spark .g1 { stroke-width: 12px; stroke-opacity: .08; }
+.mort-fig .mf-spark .g2 { stroke-width: 7px; stroke-opacity: .2; }
+.mort-fig .mf-spark .g3 { stroke-width: 3.5px; stroke: var(--btn); stroke-opacity: .9; }
+#mort_model:has(input[value=exponential]:checked) ~ .mort-fig .mf-spark-exponential { display: inline; opacity: 1; animation: mf-spark-exponential .7s linear both; }
+#mort_model:has(input[value=gompertz]:checked) ~ .mort-fig .mf-spark-gompertz { display: inline; opacity: 1; animation: mf-spark-gompertz .7s linear both; }
+#mort_model:has(input[value=logistic]:checked) ~ .mort-fig .mf-spark-logistic { display: inline; opacity: 1; animation: mf-spark-logistic .7s linear both; }
+@media (prefers-reduced-motion: reduce) { .mort-fig .mf-spark { display: none !important; } }
+
+/* =====================================================================
+   Simulation settings: choice rows, figure cards, advanced sections, reset
+   (one block; replaces the older piecemeal overrides)
+   ===================================================================== */
+.well { --box-r: 8px; --seg-h: 36px; }
+
+/* Joined option stacks (mortality, age structure) with a figure card beside them */
+.pair-row { display: grid; grid-template-columns: minmax(0, 1.12fr) minmax(0, 1fr); gap: 4px 10px; align-items: start; container-type: inline-size; }
+.set-group > .pair-row { margin-bottom: 10px; }
+.pair-row #mort_model, .pair-row #structure { display: contents; }
+.pair-row #mort_model > label.control-label, .pair-row #structure > label.control-label { grid-column: 1 / -1; display: block; margin-bottom: 0; }
+.pair-row .shiny-options-group { grid-column: 1; display: flex; flex-direction: column; gap: 0; align-self: start; margin-top: 0 !important; }
+.pair-row .radio { flex: none; height: var(--seg-h); margin: 0 !important; }
+.pair-row .radio + .radio { margin-top: -1px !important; }
+.pair-row input[type=radio] { position: absolute; opacity: 0; pointer-events: none; }
+.pair-row .radio label { display: flex; width: 100%; height: var(--seg-h); margin: 0; padding: 0; line-height: 1; cursor: pointer; }
+.pair-row .radio label span { flex: 1; box-sizing: border-box; position: relative; display: flex; flex-direction: column; align-items: center; justify-content: center;
+  text-align: center; padding: 0 4px; font-size: 12.5px; border: 1px solid var(--line-strong); border-radius: 0; background: var(--surface); color: var(--text);
+  transition: background-color var(--dur-fast), border-color var(--dur-fast), color var(--dur-fast); }
+.pair-row .radio label:hover span { background: var(--hover); }
+.pair-row .radio label:hover input:checked + span { background: var(--btn-dark); }
+.pair-row input:checked + span { background: var(--btn); border-color: var(--accent-dark); color: #fff; font-weight: 600; z-index: 1; }
+.pair-row input:focus-visible + span { outline: 2px solid #66afe9; outline-offset: 1px; z-index: 2; }
+.pair-row .radio:first-child label span { border-radius: var(--box-r) var(--box-r) 0 0; }
+.pair-row .radio:last-child label span { border-radius: 0 0 var(--box-r) var(--box-r); }
+.pair-row .radio:only-child label span { border-radius: var(--box-r); }
+
+/* Mortality buttons: model name and equation chip as two aligned columns, sized to the sidebar width */
+.mort-row .radio label span { flex-direction: row; justify-content: center; gap: 2.5cqi; padding: 0; white-space: nowrap; overflow: visible; font-size: clamp(9.5px, 3.7cqi, 12px); }
+i.mm-name, i.mm-chip { font-style: normal; }
+i.mm-name { flex: none; width: 24.5cqi; display: flex; align-items: center; justify-content: flex-start; text-align: left; font-weight: 500; font-size: clamp(9.5px, 3.7cqi, 12px); line-height: 1.3; }
+.mort-row input:checked + span i.mm-name { font-weight: 700; }
+i.mm-chip { flex: none; width: 17cqi; align-self: center; display: inline-flex; align-items: center; justify-content: center; gap: 1px; padding: 2px 0;
+  font-size: clamp(9px, 3.2cqi, 11px); line-height: 1.3; white-space: nowrap; background: none; color: var(--accent-dark); border: 1px solid var(--accent-line); border-radius: 10px; }
+.mort-row input:checked + span i.mm-chip { color: #fff; border-color: rgba(255, 255, 255, .6); }
+.mm-chip var.mvar { font-size: 1.2em; font-style: italic; padding: 0; }
+
+/* Figure cards: white with a hairline border and a faint brand wash */
+.mort-fig, .structure-row .struct-fig {
+  grid-column: 2; align-self: stretch; display: flex; flex-direction: column; justify-content: center; margin: 0; padding: 6px 10px 4px;
+  border: 1px solid color-mix(in srgb, var(--btn) 16%, var(--line)); border-radius: var(--box-r);
+  background: linear-gradient(180deg, var(--surface) 0%, color-mix(in srgb, var(--btn) 5%, var(--surface)) 100%);
+  box-shadow: 0 1px 2px rgba(16, 24, 40, .04), 0 4px 12px -6px rgba(16, 24, 40, .08); }
+.mort-fig { padding: 8px 10px 6px; }
+.mort-fig p, .struct-fig p { margin: 2px 0 0; text-align: center; font-size: 10.5px; line-height: 1.1; letter-spacing: .02em; color: var(--muted); }
+.mort-fig p { margin-top: 4px; }
+
+/* Age-structure figure: which of the two charts shows follows the selected option */
+.struct-fig .sf-sync-wrap, .struct-fig .sf-stable-wrap { display: none; }
+.struct-fig .sf-stable-wrap .sf-sync, .struct-fig .sf-sync-wrap .sf-stable { display: none; }
+#structure:has(input[value=stable]:checked) + .struct-fig .sf-stable-wrap,
+#structure:has(input[value=synchronous]:checked) + .struct-fig .sf-sync-wrap { display: flex; flex-direction: column; gap: 4px; }
+.struct-fig svg { display: block; flex: none; width: 100%; height: 28px; }
+.struct-fig rect { fill: var(--btn); opacity: .9; }
+.struct-fig .sf-axis { stroke: var(--muted); stroke-width: 1; opacity: .35; stroke-linecap: round; }
+.struct-fig p { align-self: center; }
+
+/* Survival curve */
+.mort-fig svg { display: block; width: 100%; height: 44px; overflow: visible; }
+.mort-fig path { fill: none; stroke: var(--muted); stroke-width: 1.2; opacity: .35; vector-effect: non-scaling-stroke; stroke-linecap: round; stroke-linejoin: round; }
+.mort-fig .mf-axis { stroke: var(--muted); stroke-width: 1; opacity: .35; vector-effect: non-scaling-stroke; stroke-linecap: round; }
+#mort_model:has(input[value=exponential]:checked) ~ .mort-fig .mf-exponential,
+#mort_model:has(input[value=gompertz]:checked) ~ .mort-fig .mf-gompertz,
+#mort_model:has(input[value=logistic]:checked) ~ .mort-fig .mf-logistic { stroke: var(--btn); stroke-width: 2.2; opacity: 1; animation: mf-draw .7s linear both; }
+@keyframes mf-draw { from { clip-path: inset(-4px 100% -4px 0); } to { clip-path: inset(-4px -4px -4px 0); } }
+@media (prefers-reduced-motion: reduce) { .mort-fig path { animation: none !important; } }
+
+/* Preset buttons: same height, joined side by side */
+.well #preset .shiny-options-group { display: flex; }
+.well #preset .radio { flex: 1; margin: 0 !important; }
+.well #preset .radio + .radio { margin-left: -1px; }
+.well #preset .radio label span { box-sizing: border-box; position: relative; display: flex; align-items: center; justify-content: center; min-height: var(--seg-h); margin: 0; border-width: 1px !important; }
+.well #preset .radio:first-child label span { border-radius: var(--box-r) 0 0 var(--box-r); }
+.well #preset .radio:last-child label span { border-radius: 0 var(--box-r) var(--box-r) 0; }
+.well #preset input:checked + span { z-index: 1; }
+.well #temp_curve .radio label span, .well .temp-chip { border-radius: var(--box-r); }
+
+/* Advanced sections (Run size, Temperature): the same titled group as the other settings, no card, bar or tag */
+.well .temp-section { border: 0; background: none; box-shadow: none; border-radius: 0; padding: 0; margin: 0 0 var(--gap); }
+.well .temp-section > summary { margin: 0; padding: 0 0 4px; border-bottom: 1px solid var(--line);
+  font-size: 10.5px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; color: var(--muted); }
+.well .temp-section[open] > summary { margin-bottom: 8px; }
+.well .temp-section > summary:hover { color: var(--accent-dark); }
+.well .temp-section .temp-optional { letter-spacing: 0; text-transform: none; font-weight: 500; }
+.well .temp-section .temp-body { background: none; border: 0; border-radius: 0; box-shadow: none; padding: 0; margin: 0; }
+
+/* Reset: a small icon button in the header, beside the Advanced switch */
+.settings-head .reset-icon { flex: none; display: inline-flex; align-items: center; justify-content: center; width: 24px; height: 24px; margin: 0 8px 0 0; padding: 0;
+  border: 1px solid var(--line-strong); border-radius: 50%; background: var(--surface); color: var(--muted); font-size: 11px; text-decoration: none; cursor: pointer;
+  transition: background-color var(--dur-fast), color var(--dur-fast), border-color var(--dur-fast); }
+.settings-head .reset-icon:hover, .settings-head .reset-icon:focus-visible { background: var(--btn); border-color: var(--accent-dark); color: #fff; }

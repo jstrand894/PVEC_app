@@ -64,7 +64,9 @@ window.PV_GATE = (function () {
         var timePct = Math.min(1, (performance.now() - run.t0) / RUN_MIN_MS) * 100;
         if (run.done && timePct >= 100) { finishRun(); return; }
         // While R is working, never run ahead of the real progress (or past 95%) until it reports done
-        var shown = run.done ? timePct : Math.min(timePct, 95, runPct() || timePct * 0.5);
+        var real = runPct(), shown = run.done ? timePct : Math.min(timePct, 95, real === null ? timePct * 0.5 : real);
+        // The bar only ever moves forward (auto trials restarts the real bar for every round of trials)
+        shown = Math.max(shown, run.shown || 0); run.shown = shown;
         setRun(shown);
       }
       // The status line under the button waits for the fill to finish, then shows the latest message
@@ -2350,3 +2352,59 @@ $(document).on('click', '.app-logo-link', function(e) {
   if ($('#tabs li.active a').data('value') !== 'Define assumptions') $('#tabs a[data-value="Define assumptions"]').tab('show');
   window.scrollTo({ top: 0, behavior: 'smooth' });
 });
+
+
+// Advanced switch next to "Simulation settings": shows or hides the options marked .adv-only (the temperature section).
+(function () {
+  function mirror() {
+    var cb = document.getElementById('advanced'); if (!cb) return;
+    $('#advanced_btn').attr('aria-checked', cb.checked ? 'true' : 'false');
+    $('body').toggleClass('show-advanced', cb.checked);
+  }
+  $(document).on('click', '#advanced_btn', function (e) {
+    e.preventDefault();
+    var cb = document.getElementById('advanced'); cb.checked = !cb.checked; $(cb).trigger('change'); mirror();
+  });
+  $(document).on('change', '#advanced', mirror);
+  $(document).on('shiny:updateinput shiny:connected', function () { setTimeout(mirror, 0); });
+  $(mirror);
+})();
+
+// Past runs: folded by default; the header shows how many runs there are and opens the list
+(function () {
+  function count() {
+    var n = $('#scenario_list .scen-list > li').length;
+    $('#history_count').text(n ? '(' + n + ')' : '');
+  }
+  $(document).on('click', '.history-toggle', function () {
+    var box = $(this).closest('.history-box'), open = box.hasClass('collapsed');
+    box.toggleClass('collapsed', !open); $(this).attr('aria-expanded', open ? 'true' : 'false');
+  });
+  $(document).on('shiny:value', function (e) { if (e.name === 'scenario_list') setTimeout(count, 50); });
+  $(document).on('shiny:connected', function () { setTimeout(count, 300); });
+})();
+
+// Remember the Advanced switch and which Advanced sections are open, for this browser (best effort: storage can be blocked)
+(function () {
+  var KEY = 'pvec_ui';
+  function load() { try { return JSON.parse(localStorage.getItem(KEY)) || {}; } catch (e) { return {}; } }
+  function save(patch) { try { var s = load(); for (var k in patch) s[k] = patch[k]; localStorage.setItem(KEY, JSON.stringify(s)); } catch (e) {} }
+  var sections = { 'run-section': '.run-section', 'temp': '.temp-section:not(.run-section)' };
+  // Saved only after a click on a header or the switch, so the page's own setup never overwrites the choice
+  $(document).on('click', '.run-section > summary, .temp-section:not(.run-section) > summary', function (e) {
+    if ($(e.target).closest('.temp-switch').length) return;
+    var el = this.parentNode;
+    setTimeout(function () {
+      for (var k in sections) if (el.matches(sections[k])) { var o = {}; o['open_' + k] = el.open; save(o); }
+    }, 450);
+  });
+  $(document).on('click', '#advanced_btn', function () { setTimeout(function () { save({ advanced: document.getElementById('advanced').checked }); }, 0); });
+  function restore() {
+    var s = load();
+    for (var k in sections) { var el = document.querySelector(sections[k]); if (el && s['open_' + k] !== undefined) el.open = !!s['open_' + k]; }
+    var cb = document.getElementById('advanced');
+    if (s.advanced && cb && !cb.checked) { cb.checked = true; $(cb).trigger('change'); }
+  }
+  $(function () { setTimeout(restore, 0); });
+  $(document).on('shiny:connected', function () { restore(); setTimeout(restore, 600); });
+})();

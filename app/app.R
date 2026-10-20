@@ -129,6 +129,25 @@ styer_lt <- lapply(names(styer_pars), function(m) {
 })
 names(styer_lt) <- names(styer_pars)
 # Survivorship for the first 120 days under each fitted mortality model, for the animated cohort on the About tab
+# Survivorship for the three fitted mortality models, drawn small beside the model choice in the settings
+MORT_SVG <- local({
+  path <- function(lt) {
+    x <- 0:120; y <- 1 + 58 * (1 - lt$lx[1:121])
+    paste0("M", paste(sprintf("%.1f,%.1f", x / 120 * 100, y), collapse = " L"))
+  }
+  # Keyframes that carry a glowing spark along each curve, in step with the linear left-to-right reveal
+  spark_kf <- function(m) {
+    p <- seq(0, 1, by = 0.05); lx <- styer_lt[[m]]$lx
+    sprintf("@keyframes mf-spark-%s{%s}", m, paste(sprintf("%g%%%s{transform:translate(%.2fpx,%.2fpx)%s}", p * 100, "",
+      p * 100, 1 + 58 * (1 - approx(0:120, lx[1:121], xout = p * 120)$y), ifelse(p == 1, ";opacity:0", "")), collapse = ""))
+  }
+  spark <- function(m) sprintf('<g class="mf-spark mf-spark-%s"><path class="g1" d="M0,0h0"/><path class="g2" d="M0,0h0"/><path class="g3" d="M0,0h0"/></g>', m)
+  paste0('<svg viewBox="0 0 100 60" preserveAspectRatio="none" role="img" aria-label="Survival of a mosquito cohort under each mortality model">',
+         '<style>', paste(vapply(names(styer_lt), spark_kf, ""), collapse = ""), '</style>',
+         paste(sprintf('<path class="mf-%s" d="%s" pathLength="1"/>', names(styer_lt), vapply(styer_lt, path, "")), collapse = ""),
+         paste(vapply(names(styer_lt), spark, ""), collapse = ""),
+         '<line x1="0" y1="59.5" x2="100" y2="59.5" class="mf-axis"/></svg>')
+})
 COHORT_JSON <- as.character(jsonlite::toJSON(lapply(styer_lt, function(lt) round(lt$lx[1:121], 4)), digits = 4))
 styer_cx <- lapply(styer_lt, age_specific_vc, n = 10, MA2 = 1.5 * 0.75^2)
 r_hat <- uniroot(function(r) ct_stable(styer_lt$exponential, styer_cx$exponential, r, 3) - 11.4,
@@ -1563,11 +1582,18 @@ ui <- fluidPage(
      tags$form(class = "well", role = "complementary",
       div(class = "settings-head",
         h4("Simulation settings", style = "margin: 0;"),
+        div(class = "adv-switch-wrap",
+          tags$label(`for` = "advanced_btn", "Advanced"),
+          tags$input(type = "checkbox", id = "advanced", class = "temp-sw-input", tabindex = "-1", `aria-hidden` = "true"),
+          tags$button(type = "button", id = "advanced_btn", class = "temp-switch adv-main-switch", role = "switch", `aria-checked` = "false",
+                      title = "Show advanced options (temperature)", span(class = "temp-sw-knob"))),
+        actionLink("reset_open", icon("rotate-left"), class = "reset-open reset-icon", title = "Reset to defaults...", `aria-label` = "Reset to defaults"),
         tags$button(id = "collapse_sidebar", type = "button", class = "sidebar-arrow",
                     title = "Hide settings", `aria-label` = "Hide settings", `aria-expanded` = "true",
                     icon("chevron-left"))),
-      radioButtons("mort_model",
-        span("Mortality model ",
+      div(class = "set-group", div(class = "set-group-title", "Model"),
+      div(class = "pair-row mort-row", radioButtons("mort_model",
+        span("Mortality ",
           span(class = "help-tip", tabindex = "0", role = "note", `aria-label` = "About the mortality model", "?",
             span(class = "help-tip-text",
               "How a mosquito's daily chance of dying changes as it ages.",
@@ -1577,29 +1603,52 @@ ui <- fluidPage(
               strong("Gompertz: "), "risk keeps rising steadily with age, with no levelling off (uses a and b).",
               br(), br(),
               strong("Exponential: "), "the same risk every day, whatever the age (uses a only)."))),
-        c("Logistic" = "logistic", "Gompertz" = "gompertz", "Exponential" = "exponential")),
-      radioButtons("structure",
-        span("Population age structure ",
+        choiceNames = list(
+          tagList(tags$i(class = "mm-name", "Exponential"), tags$i(class = "mm-chip", tags$var(class = "mvar", "a"))),
+          tagList(tags$i(class = "mm-name", "Gompertz"), tags$i(class = "mm-chip", tags$var(class = "mvar", "a"), "+", tags$var(class = "mvar", "b"))),
+          tagList(tags$i(class = "mm-name", "Logistic"), tags$i(class = "mm-chip", tags$var(class = "mvar", "a"), "+", tags$var(class = "mvar", "b"), "+", tags$var(class = "mvar", "s")))),
+        choiceValues = c("exponential", "gompertz", "logistic"), selected = "logistic"),
+        div(class = "mort-fig", HTML(MORT_SVG), p("120-day survival"))),
+      div(class = "pair-row structure-row", radioButtons("structure",
+        span("Age structure ",
           span(class = "help-tip", tabindex = "0", role = "note", `aria-label` = "About population age structure", "?",
             span(class = "help-tip-text",
               strong("Stable: "), "the population has settled into a steady mix of ages (0 to 199 days). Only mosquitoes old enough to have taken a first bite contribute to Ct.",
               br(), br(),
               strong("Synchronous: "), "the population is made up entirely of young adults, spread equally over ages 3 to 6 days, and Ct averages the daily capacity over those ages."))),
         c("Stable" = "stable", "Synchronous" = "synchronous")),
+      div(class = "struct-fig", `aria-live` = "polite",
+        div(class = "sf-stable-wrap", HTML('<svg viewBox="0 0 200 64" preserveAspectRatio="none" role="img" aria-label="Age mix of the mosquito population"><g class="sf-stable"><rect x="6.0" y="6.0" width="6.2" height="46.0" rx="1"/><rect x="13.4" y="12.9" width="6.2" height="39.1" rx="1"/><rect x="20.8" y="18.7" width="6.2" height="33.3" rx="1"/><rect x="28.2" y="23.6" width="6.2" height="28.4" rx="1"/><rect x="35.6" y="27.7" width="6.2" height="24.3" rx="1"/><rect x="43.0" y="31.2" width="6.2" height="20.8" rx="1"/><rect x="50.4" y="34.1" width="6.2" height="17.9" rx="1"/><rect x="57.8" y="36.6" width="6.2" height="15.4" rx="1"/><rect x="65.2" y="38.7" width="6.2" height="13.3" rx="1"/><rect x="72.6" y="40.5" width="6.2" height="11.5" rx="1"/><rect x="80.0" y="42.0" width="6.2" height="10.0" rx="1"/><rect x="87.4" y="43.2" width="6.2" height="8.8" rx="1"/><rect x="94.8" y="44.3" width="6.2" height="7.7" rx="1"/><rect x="102.2" y="45.2" width="6.2" height="6.8" rx="1"/><rect x="109.6" y="45.9" width="6.2" height="6.1" rx="1"/><rect x="117.0" y="46.6" width="6.2" height="5.4" rx="1"/><rect x="124.4" y="47.1" width="6.2" height="4.9" rx="1"/><rect x="131.8" y="47.6" width="6.2" height="4.4" rx="1"/><rect x="139.2" y="47.9" width="6.2" height="4.1" rx="1"/><rect x="146.6" y="48.3" width="6.2" height="3.7" rx="1"/><rect x="154.0" y="48.5" width="6.2" height="3.5" rx="1"/><rect x="161.4" y="48.8" width="6.2" height="3.2" rx="1"/><rect x="168.8" y="49.0" width="6.2" height="3.0" rx="1"/><rect x="176.2" y="49.1" width="6.2" height="2.9" rx="1"/></g><g class="sf-sync"><rect x="28.2" y="14" width="6.2" height="38" rx="1"/><rect x="35.6" y="14" width="6.2" height="38" rx="1"/><rect x="43.0" y="14" width="6.2" height="38" rx="1"/><rect x="50.4" y="14" width="6.2" height="38" rx="1"/></g><line x1="4" y1="52.5" x2="196" y2="52.5" class="sf-axis"/></svg>'), p("Continuous emergence")),
+        div(class = "sf-sync-wrap", HTML('<svg viewBox="0 0 200 64" preserveAspectRatio="none" role="img" aria-label="Age mix of the mosquito population"><g class="sf-stable"><rect x="6.0" y="6.0" width="6.2" height="46.0" rx="1"/><rect x="13.4" y="12.9" width="6.2" height="39.1" rx="1"/><rect x="20.8" y="18.7" width="6.2" height="33.3" rx="1"/><rect x="28.2" y="23.6" width="6.2" height="28.4" rx="1"/><rect x="35.6" y="27.7" width="6.2" height="24.3" rx="1"/><rect x="43.0" y="31.2" width="6.2" height="20.8" rx="1"/><rect x="50.4" y="34.1" width="6.2" height="17.9" rx="1"/><rect x="57.8" y="36.6" width="6.2" height="15.4" rx="1"/><rect x="65.2" y="38.7" width="6.2" height="13.3" rx="1"/><rect x="72.6" y="40.5" width="6.2" height="11.5" rx="1"/><rect x="80.0" y="42.0" width="6.2" height="10.0" rx="1"/><rect x="87.4" y="43.2" width="6.2" height="8.8" rx="1"/><rect x="94.8" y="44.3" width="6.2" height="7.7" rx="1"/><rect x="102.2" y="45.2" width="6.2" height="6.8" rx="1"/><rect x="109.6" y="45.9" width="6.2" height="6.1" rx="1"/><rect x="117.0" y="46.6" width="6.2" height="5.4" rx="1"/><rect x="124.4" y="47.1" width="6.2" height="4.9" rx="1"/><rect x="131.8" y="47.6" width="6.2" height="4.4" rx="1"/><rect x="139.2" y="47.9" width="6.2" height="4.1" rx="1"/><rect x="146.6" y="48.3" width="6.2" height="3.7" rx="1"/><rect x="154.0" y="48.5" width="6.2" height="3.5" rx="1"/><rect x="161.4" y="48.8" width="6.2" height="3.2" rx="1"/><rect x="168.8" y="49.0" width="6.2" height="3.0" rx="1"/><rect x="176.2" y="49.1" width="6.2" height="2.9" rx="1"/></g><g class="sf-sync"><rect x="28.2" y="14" width="6.2" height="38" rx="1"/><rect x="35.6" y="14" width="6.2" height="38" rx="1"/><rect x="43.0" y="14" width="6.2" height="38" rx="1"/><rect x="50.4" y="14" width="6.2" height="38" rx="1"/></g><line x1="4" y1="52.5" x2="196" y2="52.5" class="sf-axis"/></svg>'), p("One cohort, ages 3 to 6")))),),
+      div(class = "set-group", div(class = "set-group-title", "Assumptions", actionLink("goto_about", "About presets", class = "set-group-link")),
+      radioButtons("preset",
+        span("Presets ",
+          span(class = "help-tip", tabindex = "0", role = "note", `aria-label` = "About the assumption presets", "?",
+            span(class = "help-tip-text",
+              strong("Probabilistic: "), "each assumption is drawn from a probability distribution whose range comes from published estimates. Biting rate and vector competence use Beta, incubation period and mosquito density use Uniform, and the mortality parameters use truncated Normal. Results vary from trial to trial, so the forecast shows a distribution of Ct.",
+              br(), br(),
+              strong("Deterministic: "), "every assumption is a single value, set to the mean of its Probabilistic distribution, so every trial gives the same Ct. Use it as a deterministic baseline to see how much the uncertainty changes the result. Switching presets keeps what you have entered. You can still change any distribution by hand."))),
+        choices = c("Probabilistic" = "lit",
+                    "Deterministic" = "fixed"),
+        selected = "lit"),
+      div(class = "preset-vary", role = "status", `aria-live` = "polite", id = "preset_vary")),
+      tags$details(class = "temp-section adv-only run-section",
+        tags$summary(span(class = "temp-name", "Run size"), span(class = "temp-optional", "trials, seed")),
+        div(class = "temp-body",
       div(class = "run-box", role = "group", `aria-labelledby` = "run_box_title",
-        div(class = "run-box-title", id = "run_box_title", "Run size"),
+        div(class = "run-box-title", id = "run_box_title", "Run size", style = "display: none;"),
         div(class = "run-box-sub", "How many trials to simulate, and the seed that makes a run repeatable."),
-        checkboxInput("auto_trials", span("Auto trials", title = "Keep adding trials until the 95th percentile of Ct is estimated precisely enough"), FALSE),
+        div(class = "adv-only-col", checkboxInput("auto_trials", span("Auto trials", title = "Keep adding trials until the 95th percentile of Ct is estimated precisely enough"), FALSE)),
         fluidRow(
           # Both fields stay on the page, stacked in one cell, and cross-fade when Auto trials is switched (see pvec.js and .swap-cell)
-          column(6, div(class = "trials-box swap-cell",
+          column(6, class = "adv-only-col", div(class = "trials-box swap-cell",
                         div(class = "swap-a", textInput("n_iter", "Trials", "1,000")),
                         div(class = "swap-b",
                           numericInput("auto_tol", span("Stop at SE (% of P95)", title = "Trials are added until the standard error of the 95th percentile of Ct is below this share of the percentile itself. Lower means more trials."),
                                        1, min = 0.1, max = 20, step = 0.1)))),
           column(6, numericInput("seed", HTML(paste0("Seed ", as.character(actionLink("rand_seed", icon("shuffle"), title = "Pick a random seed")))), 1))),
-        div(class = "run-box-note-wrap", div(class = "run-box-note-in", div(class = "run-box-note", "Stops once the standard error of the 95th percentile is below this share of its value, up to 50,000 trials.")))),
-      tags$details(class = "temp-section",
+        div(class = "run-box-note-wrap", div(class = "run-box-note-in", div(class = "run-box-note", "Stops once the standard error of the 95th percentile is below this share of its value, up to 50,000 trials.")))))),
+      tags$details(class = "temp-section adv-only",
         tags$summary(span(class = "temp-name", "Temperature"), span(class = "temp-optional", "optional"), span(class = "temp-badge-wrap", `aria-live` = "polite", span(class = "temp-badge", id = "temp_badge")),
           # On/off switch: the checkbox holds the state (so the server can set it), the button is what people click
           tags$input(type = "checkbox", id = "temp_on", class = "temp-sw-input", tabindex = "-1", `aria-hidden` = "true"),
@@ -1642,27 +1691,7 @@ ui <- fluidPage(
               numericInput("temp_pe", "Incubation period (% per \u00b0C)", -10, step = 1, width = "100%"),
               numericInput("temp_pm", "Initial mortality a (% per \u00b0C)", 5, step = 1, width = "100%"),
               numericInput("temp_pa", "Biting rate (% per \u00b0C)", 3, step = 1, width = "100%"),
-              p(class = "temp-note", "Rough placeholders, not fitted curves. Pick a vector and pathogen above to use published curves.")))))),
-      radioButtons("preset",
-        span("Assumption presets ",
-          span(class = "help-tip", tabindex = "0", role = "note", `aria-label` = "About the assumption presets", "?",
-            span(class = "help-tip-text",
-              strong("Uncertain ranges: "), "each assumption is drawn from a probability distribution whose range comes from published estimates. Biting rate and vector competence use Beta, incubation period and mosquito density use Uniform, and the mortality parameters use truncated Normal. Results vary from trial to trial, so the forecast shows a distribution of Ct.",
-              br(), br(),
-              strong("Point values: "), "every assumption is a single value, set to the mean of its Uncertain ranges distribution, so every trial gives the same Ct. Use it as a deterministic baseline to see how much the uncertainty changes the result. Switching presets keeps what you have entered. You can still change any distribution by hand."))),
-        choices = c("Uncertain ranges" = "lit",
-                    "Point values" = "fixed"),
-        selected = "lit"),
-      # Both short descriptions sit in one box whose height follows the chosen one (see pvec.js), so switching
-      # presets fades the text and eases the controls below up or down instead of snapping
-      div(class = "preset-stack", id = "preset_stack",
-        div(class = "preset-pane on", `data-preset` = "lit",
-          p(class = "preset-desc",
-          HTML(paste0("Ranges from published estimates (", as.character(actionLink("goto_about", "see Presets")), ").")))),
-        div(class = "preset-pane", `data-preset` = "fixed",
-          p(class = "preset-desc", "One value per assumption: a baseline with no spread."))),
-      div(class = "preset-vary", role = "status", `aria-live` = "polite", id = "preset_vary"),
-      actionButton("reset_open", tagList(icon("rotate-left"), " Reset..."), class = "btn-default btn-sm reset-open", width = "100%")
+              p(class = "temp-note", "Rough placeholders, not fitted curves. Pick a vector and pathogen above to use published curves."))))))
      ),
      div(class = "sidebar-dock",
      div(class = "run-dock",
@@ -1671,17 +1700,19 @@ ui <- fluidPage(
         div(class = "run-issues smooth-h", id = "run_issues", role = "status", `aria-live` = "polite"),
         uiOutput("stale_note"),
         div(class = "run-status", textOutput("run_status"))),
-     div(class = "history-box",
+     div(class = "history-box collapsed",
         div(class = "history-header",
             div(class = "history-text",
-                div(class = "history-title-row", icon("clock-rotate-left"), span(class = "history-title", " Past runs")),
-                div(class = "history-sub", "Click a run to reload its settings.")),
+                tags$button(type = "button", class = "history-toggle", `aria-expanded` = "false", span(class = "chev", icon("chevron-right")), icon("clock-rotate-left"), span(class = "history-title", " Past runs"), span(class = "history-count", id = "history_count")),
+                NULL),
             span(class = "hist-actions",
                  tags$button(type = "button", class = "hist-icon scen-dlall", `aria-label` = "Download all past runs",
                              `data-tip` = "Download all past runs as one table (CSV)", icon("file-arrow-down")),
                  tags$button(type = "button", class = "hist-icon scen-clear", `aria-label` = "Clear all past runs",
                              `data-tip` = "Remove all past runs from the list (you can undo)", icon("trash-can")))),
-        uiOutput("scenario_list", class = "smooth-h")))
+        div(class = "history-body", div(class = "history-body-in",
+          div(class = "history-sub", "Click a run to reload its settings."),
+          uiOutput("scenario_list", class = "smooth-h")))))
     ),
     mainPanel(width = 9,
       tabsetPanel(id = "tabs",
@@ -2236,11 +2267,13 @@ server <- function(input, output, session) {
   }
 
   # Assumptions in use. Growth rate and first-bite age only matter for the stable age distribution.
-  active_ids <- function(model, structure = input$structure)
+  active_ids <- function(model, structure = input$structure) {
+    req(model, structure)
     c(names(vc_specs), "mort_a",
       if (model != "exponential") "mort_b",
       if (model == "logistic") "mort_s",
       if (identical(structure, "stable")) names(pop_specs))
+  }
 
   setting_ids <- all_setting_ids
   loaded <- reactiveVal(NULL)
@@ -2365,6 +2398,7 @@ server <- function(input, output, session) {
       updateTextInput(session, "n_iter", value = format(round(tr), big.mark = ","))
     # Auto trials (absent in older files and links, which means off)
     at <- toupper(get1("auto.trials")); updateCheckboxInput(session, "auto_trials", value = identical(at, "TRUE"))
+    if (!identical(at, "TRUE")) updateCheckboxInput(session, "advanced", value = TRUE)   # a fixed trial count is an Advanced setting
     if (!is.na(num("auto.tol"))) updateNumericInput(session, "auto_tol", value = max(0.1, min(20, num("auto.tol"))))
     # Temperature what-if (absent in older files and links, which means no change)
     cv <- get1("temp.curve"); updateRadioButtons(session, "temp_curve", selected = if (!is.na(cv) && cv %in% c("generic", names(TEMP_CURVES))) cv else "generic")
@@ -2372,6 +2406,7 @@ server <- function(input, output, session) {
     td <- num("temp"); updateNumericInput(session, "temp_delta", value = if (is.na(td)) 0 else max(-8, min(8, td)))
     # Files and links from before the switch existed: on whenever there was a change
     on <- toupper(get1("temp.on")); updateCheckboxInput(session, "temp_on", value = if (on %in% c("TRUE", "FALSE")) on == "TRUE" else (!is.na(td) && td != 0))
+    if (isTRUE(isolate(input$temp_on)) || on %in% "TRUE") updateCheckboxInput(session, "advanced", value = TRUE)
     for (k in list(c("temp.pe", "temp_pe", -10), c("temp.pm", "temp_pm", 5), c("temp.pa", "temp_pa", 3)))
       updateNumericInput(session, k[2], value = if (is.na(num(k[1]))) as.numeric(k[3]) else num(k[1]))
     for (id in setting_ids) {
@@ -2503,6 +2538,12 @@ server <- function(input, output, session) {
     }
     # A settings file that changed the mortality model is applied after the fitted values
     if (!is.null(loaded())) { apply_cfg(loaded()); loaded(NULL) }
+  }, ignoreInit = TRUE)
+
+  # Temperature lives under Advanced; with Advanced off it has no effect (its settings are kept)
+  observeEvent(input$advanced, if (!isTRUE(input$advanced)) {
+    updateCheckboxInput(session, "temp_on", value = FALSE)
+    updateNumericInput(session, "seed", value = 1)   # outside Advanced the seed is always 1
   }, ignoreInit = TRUE)
 
   observeEvent(input$goto_about, session$sendCustomMessage("gotoAbout", list(target = "about_presets")))
@@ -2639,7 +2680,7 @@ server <- function(input, output, session) {
   })
 
   # Auto trials: the target as a fraction (NA when the box is empty or outside 0.1% to 20%)
-  auto_on  <- reactive(isTRUE(input$auto_trials))
+  auto_on  <- reactive(!isTRUE(input$advanced) || isTRUE(input$auto_trials))   # outside Advanced the trial count is always automatic
   auto_tol <- reactive({ x <- suppressWarnings(as.numeric(input$auto_tol)); if (length(x) != 1 || is.na(x) || x < 0.1 || x > 20) NA_real_ else x / 100 })
 
   # The part of the temperature section that counts as a setting: nothing while it is off, or on the generic curve at 0 (that is
@@ -2721,12 +2762,18 @@ server <- function(input, output, session) {
     tadj <- temperature_adjust(input$temp_curve, input$temp_ref, dT, input$temp_pe, input$temp_pm, input$temp_pa)
     adj <- if (!is.null(tadj)) tadj$mult
     auto <- NULL
+    auto_floor <- 0; auto_hi <- 0
     run_n <- function(n_now, label = "Running trials")
       run_model(model, input$structure, specs, n_now, input$seed, pairs = usable_pairs(specs), uploaded = uploaded(),
-                progress = function(i, n) setProgress(i / n, message = label, detail = sprintf("%d of %d", i, n)), adjust = adj)
+                progress = function(i, n) {
+                  # Auto trials restarts the count every round, so each round covers half of what is left and the bar never steps back
+                  f <- if (auto_on()) auto_floor + (1 - auto_floor) * 0.5 * i / n else i / n
+                  auto_hi <<- max(auto_hi, f)
+                  setProgress(auto_hi, message = label, detail = sprintf("%d of %d", i, n))
+                }, adjust = adj)
     run <- withProgress(message = "Running trials", value = 0, {
       if (auto_on()) {
-        auto <- run_auto(function(n_now) run_n(n_now, "Running trials (auto)"), auto_tol())
+        auto <- run_auto(function(n_now) { r <- run_n(n_now, "Running trials (auto)"); auto_floor <<- auto_hi; r }, auto_tol())
         auto$run
       } else run_n(n)
     })
@@ -2954,6 +3001,7 @@ server <- function(input, output, session) {
                           `data-hide` = "Hide earlier runs"),
               div(class = "scen-rest-wrap", div(class = "scen-rest-in", tags$ul(class = "scen-list scen-rest", lapply(rest, item))))))
   })
+  outputOptions(output, "scenario_list", suspendWhenHidden = FALSE)   # Past runs can be folded away, but the list still fills
 
   # "Run N, model, structure, trials" line, shown in the bar of each results tab's quick summary, with a warning when the settings have moved on
   run_context_parts <- function() {

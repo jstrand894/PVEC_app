@@ -212,14 +212,14 @@ if (nzchar(Sys.getenv("PVEC_SMOKE"))) {
   px <- processx_ok <- requireNamespace("callr", quietly = TRUE)
   if (!px) check("callr is installed for the launch test (install.packages('callr'))", FALSE) else {
     bg <- callr::r_bg(function(p) shiny::runApp("app", port = p, launch.browser = FALSE), args = list(port), stdout = "|", stderr = "|")
-    on.exit(bg$kill(), add = TRUE)
     page <- NULL
     for (i in 1:40) { Sys.sleep(1); page <- tryCatch(suppressWarnings(readLines(sprintf("http://127.0.0.1:%d", port), warn = FALSE)), error = function(e) NULL); if (!is.null(page)) break }
     check("the app starts and serves a page", !is.null(page) && length(page) > 10)
     check("the page contains the main controls", !is.null(page) && all(vapply(c("auto_trials", "copy_link", "n_iter"), function(k) any(grepl(k, page, fixed = TRUE)), TRUE)))
     check("the app is still running (no startup error)", bg$is_alive())
+    bg$kill()
   }
 }
 
 cat(sprintf("\n%d of %d checks passed.\n", sum(unlist(results)), length(results)))
-if (!all(unlist(results))) quit(status = 1)
+if (!all(unlist(results)) && !interactive()) quit(status = 1)
